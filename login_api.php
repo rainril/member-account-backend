@@ -34,9 +34,6 @@ if (empty($email) || empty($password)) {
     exit();
 }
 
-// 1. Look up the member by email, along with their most recent membership
-//    (plan name, dates, status) so the app has everything it needs for
-//    the dashboard right after login.
 $stmt = $conn->prepare(
     "SELECT m.MemberID, m.FirstName, m.LastName, m.Email, m.PasswordHash,
             m.Phone, m.ProfilePictureURL, m.MemberSince, m.QRCodeData,
@@ -56,29 +53,27 @@ $result = $stmt->get_result();
 $member = $result->fetch_assoc();
 $stmt->close();
 
-// 2. Verify the member exists AND the password matches the stored hash
 if ($member && password_verify($password, $member["PasswordHash"])) {
     $response["success"] = true;
     $response["message"] = "Login successful.";
     $response["member"] = [
         "member_id"          => (int) $member["MemberID"],
+        "MemberID"           => (int) $member["MemberID"], // Included for strict casing fallback
         "first_name"         => $member["FirstName"],
         "last_name"          => $member["LastName"],
         "email"              => $member["Email"],
         "phone"              => $member["Phone"],
         "profile_picture"    => $member["ProfilePictureURL"],
         "member_since"       => $member["MemberSince"],
-        "membership_plan"    => $member["PlanLabel"],       // e.g. "7 Months", or null if no membership yet
-        "membership_status"  => $member["MembershipStatus"], // "Active", "Expired", etc., or null
+        "membership_plan"    => $member["PlanLabel"],
+        "membership_status"  => $member["MembershipStatus"],
         "next_renewal_date"  => $member["NextRenewalDate"],
-        "plan_price"         => $member["PlanPrice"],        // e.g. 3500.00, or null
-        "session_credits"    => $member["SessionCredits"],   // e.g. 30, or null
-        "sessions_used"      => $member["SessionsUsed"],     // e.g. 5, or null
-        "qr_code_data"       => $member["QRCodeData"],       // the signed QR token
+        "plan_price"         => $member["PlanPrice"],
+        "session_credits"    => $member["SessionCredits"],
+        "sessions_used"      => $member["SessionsUsed"],
+        "qr_code_data"       => $member["QRCodeData"],
     ];
 } else {
-    // Same generic message whether the email doesn't exist or the
-    // password is wrong -- don't reveal which one it was.
     $response["message"] = "Invalid email or password.";
 }
 
