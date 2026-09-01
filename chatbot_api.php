@@ -21,7 +21,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 require_once 'ai_config.php';
 require_once 'db_connect.php';
 
-$input = json_decode(file_get_contents('php://input'), true);
+$rawInput = file_get_contents('php://input');
+error_log('RAW INPUT LENGTH: ' . strlen($rawInput));
+error_log('RAW INPUT: ' . $rawInput);
+
+$input = json_decode($rawInput, true);
+error_log('JSON DECODE ERROR: ' . json_last_error_msg());
+error_log('DECODED INPUT: ' . print_r($input, true));
 
 if (!isset($input['message']) || trim($input['message']) === '') {
     echo json_encode(['success' => false, 'error' => 'Message is required.']);
