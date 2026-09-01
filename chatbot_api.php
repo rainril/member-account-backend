@@ -1,9 +1,15 @@
 <?php
 // ============================================================
 // chatbot_api.php
+// PrimeFit Member Chatbot - Groq
 // ============================================================
 
-// Never let PHP warnings/errors leak into the JSON response.
+// ------------------------------------------------------------
+// ERROR HANDLING
+// ------------------------------------------------------------
+
+// Never display PHP errors directly to the frontend.
+// The API must always return JSON.
 ini_set('display_errors', '0');
 error_reporting(0);
 
@@ -13,201 +19,665 @@ header('Access-Control-Allow-Methods: POST, OPTIONS, GET');
 header('Access-Control-Allow-Headers: Content-Type, Authorization');
 header('Access-Control-Max-Age: 3600');
 
+// Make sure fatal PHP errors don't result in an empty response.
+register_shutdown_function(function () {
+    $error = error_get_last();
+
+    if ($error !== null) {
+        $fatalTypes = [
+            E_ERROR,
+            E_PARSE,
+            E_CORE_ERROR,
+            E_COMPILE_ERROR
+        ];
+
+        if (in_array($error['type'], $fatalTypes, true)) {
+            error_log(
+                'CHATBOT PHP FATAL ERROR: ' .
+                $error['message'] .
+                ' in ' .
+                $error['file'] .
+                ':' .
+                $error['line']
+            );
+
+            if (!headers_sent()) {
+                http_response_code(500);
+                header('Content-Type: application/json; charset=utf-8');
+            }
+
+            echo json_encode([
+                'success' => false,
+                'error' => 'Internal server error.',
+                'code' => 'PHP_FATAL_ERROR'
+            ]);
+        }
+    }
+});
+
+// ------------------------------------------------------------
+// CORS PREFLIGHT
+// ------------------------------------------------------------
+
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
+    echo json_encode([
+        'success' => true
+    ]);
     exit();
 }
 
-require_once 'ai_config.php';
-require_once 'db_connect.php';
+// ------------------------------------------------------------
+// LOAD CONFIGURATION
+// ------------------------------------------------------------
+
+require_once __DIR__ . '/ai_config.php';
+require_once __DIR__ . '/db_connect.php';
+
+// ------------------------------------------------------------
+// CHECK DATABASE CONNECTION
+// ------------------------------------------------------------
+
+if (!isset($conn) || !($conn instanceof mysqli)) {
+    error_log('CHATBOT ERROR: Database connection is not available.');
+
+    http_response_code(500);
+
+    echo json_encode([
+        'success' => false,
+        'error' => 'Database connection is not available.',
+        'code' => 'DB_CONNECTION_ERROR'
+    ]);
+
+    exit();
+}
+
+if ($conn->connect_errno) {
+    error_log(
+        'CHATBOT DB ERROR: ' .
+        $conn->connect_error
+    );
+
+    http_response_code(500);
+
+    echo json_encode([
+        'success' => false,
+        'error' => 'Database connection failed.',
+        'code' => 'DB_CONNECTION_ERROR'
+    ]);
+
+    exit();
+}
+
+// ------------------------------------------------------------
+// READ REQUEST BODY
+// ------------------------------------------------------------
 
 $rawInput = file_get_contents('php://input');
-error_log('RAW INPUT LENGTH: ' . strlen($rawInput));
-error_log('RAW INPUT: ' . $rawInput);
+
+error_log(
+    'CHATBOT RAW INPUT LENGTH: ' .
+    strlen($rawInput)
+);
+
+// Debug request body.
+// Keep this while troubleshooting.
+error_log(
+    'CHATBOT RAW INPUT: ' .
+    $rawInput
+);
+
+// ------------------------------------------------------------
+// VALIDATE JSON INPUT
+// ------------------------------------------------------------
+
+if ($rawInput === false || trim($rawInput) === '') {
+
+    http_response_code(400);
+
+    echo json_encode([
+        'success' => false,
+        'error' => 'Request body is empty.',
+        'code' => 'EMPTY_REQUEST'
+    ]);
+
+    exit();
+}
 
 $input = json_decode($rawInput, true);
-error_log('JSON DECODE ERROR: ' . json_last_error_msg());
-error_log('DECODED INPUT: ' . print_r($input, true));
 
-if (!isset($input['message']) || trim($input['message']) === '') {
-    echo json_encode(['success' => false, 'error' => 'Message is required.']);
+error_log(
+    'CHATBOT JSON DECODE ERROR: ' .
+    json_last_error_msg()
+);
+
+error_log(
+    'CHATBOT DECODED INPUT: ' .
+    print_r($input, true)
+);
+
+// Check if JSON is valid.
+if (json_last_error() !== JSON_ERROR_NONE || !is_array($input)) {
+
+    http_response_code(400);
+
+    echo json_encode([
+        'success' => false,
+        'error' => 'Invalid JSON request.',
+        'code' => 'INVALID_JSON',
+        'json_error' => json_last_error_msg()
+    ]);
+
     exit();
 }
 
-$userMessage = $input['message'];
-$memberId = intval($input['member_id'] ?? 0);
-$history = isset($input['history']) && is_array($input['history']) ? $input['history'] : [];
+// ------------------------------------------------------------
+// VALIDATE MESSAGE
+// ------------------------------------------------------------
+
+if (
+    !isset($input['message']) ||
+    !is_string($input['message']) ||
+    trim($input['message']) === ''
+) {
+
+    http_response_code(400);
+
+    echo json_encode([
+        'success' => false,
+        'error' => 'Message is required.',
+        'code' => 'MESSAGE_REQUIRED'
+    ]);
+
+    exit();
+}
+
+$userMessage = trim($input['message']);
+
+$memberId = intval(
+    $input['member_id'] ?? 0
+);
+
+$history = (
+    isset($input['history']) &&
+    is_array($input['history'])
+)
+    ? $input['history']
+    : [];
+
+// ------------------------------------------------------------
+// VALIDATE MEMBER ID
+// ------------------------------------------------------------
 
 if ($memberId <= 0) {
-    echo json_encode(['success' => false, 'error' => 'Member ID is required for personalized assistance.']);
+
+    http_response_code(400);
+
+    echo json_encode([
+        'success' => false,
+        'error' => 'Member ID is required for personalized assistance.',
+        'code' => 'MEMBER_ID_REQUIRED'
+    ]);
+
     exit();
 }
 
-$memberCheckStmt = $conn->prepare("SELECT MemberID FROM Members WHERE MemberID = ?");
-if ($memberCheckStmt) {
-    $memberCheckStmt->bind_param("i", $memberId);
-    $memberCheckStmt->execute();
-    $memberExists = $memberCheckStmt->get_result()->fetch_assoc();
-    $memberCheckStmt->close();
-} else {
-    $memberExists = null;
+// ------------------------------------------------------------
+// CHECK MEMBER EXISTS
+// ------------------------------------------------------------
+
+$memberCheckStmt = $conn->prepare(
+    "SELECT MemberID
+     FROM Members
+     WHERE MemberID = ?"
+);
+
+if (!$memberCheckStmt) {
+
+    error_log(
+        'CHATBOT MEMBER CHECK PREPARE ERROR: ' .
+        $conn->error
+    );
+
+    http_response_code(500);
+
+    echo json_encode([
+        'success' => false,
+        'error' => 'Unable to verify member account.',
+        'code' => 'DB_QUERY_ERROR'
+    ]);
+
+    exit();
 }
+
+$memberCheckStmt->bind_param(
+    "i",
+    $memberId
+);
+
+$memberCheckStmt->execute();
+
+$memberResult = $memberCheckStmt->get_result();
+
+$memberExists = $memberResult
+    ? $memberResult->fetch_assoc()
+    : null;
+
+$memberCheckStmt->close();
 
 if (!$memberExists) {
-    echo json_encode(['success' => false, 'error' => 'Member not found. Please log in again.']);
+
+    http_response_code(404);
+
+    echo json_encode([
+        'success' => false,
+        'error' => 'Member not found. Please log in again.',
+        'code' => 'MEMBER_NOT_FOUND'
+    ]);
+
     exit();
 }
+
+// ------------------------------------------------------------
+// MEMBER CONTEXT
+// ------------------------------------------------------------
 
 $memberContext = '';
 
-// Profile
-$profileStmt = $conn->prepare("SELECT FirstName, LastName, Email, Phone FROM Members WHERE MemberID = ?");
+// ------------------------------------------------------------
+// PROFILE
+// ------------------------------------------------------------
+
+$profileStmt = $conn->prepare(
+    "SELECT FirstName, LastName, Email, Phone
+     FROM Members
+     WHERE MemberID = ?"
+);
+
 if ($profileStmt) {
-    $profileStmt->bind_param("i", $memberId);
+
+    $profileStmt->bind_param(
+        "i",
+        $memberId
+    );
+
     $profileStmt->execute();
-    $profile = $profileStmt->get_result()->fetch_assoc();
+
+    $profileResult = $profileStmt->get_result();
+
+    $profile = $profileResult
+        ? $profileResult->fetch_assoc()
+        : null;
+
     $profileStmt->close();
 
     if ($profile) {
-        $memberContext .= "Member Name: {$profile['FirstName']} {$profile['LastName']}\n";
-        $memberContext .= "Email: {$profile['Email']}\n";
-        $memberContext .= "Phone: {$profile['Phone']}\n";
+
+        $memberContext .=
+            "Member Name: " .
+            ($profile['FirstName'] ?? '') .
+            " " .
+            ($profile['LastName'] ?? '') .
+            "\n";
+
+        $memberContext .=
+            "Email: " .
+            ($profile['Email'] ?? '') .
+            "\n";
+
+        $memberContext .=
+            "Phone: " .
+            ($profile['Phone'] ?? '') .
+            "\n";
     }
 }
 
-// Membership status
+// ------------------------------------------------------------
+// MEMBERSHIP STATUS
+// ------------------------------------------------------------
+
 $membershipStmt = $conn->prepare(
-    "SELECT m.Status, p.DurationLabel, p.Price, m.StartDate, m.NextRenewalDate 
-     FROM Memberships m 
-     JOIN Plans p ON m.PlanID = p.PlanID 
-     WHERE m.MemberID = ? 
-     ORDER BY m.StartDate DESC LIMIT 1"
+    "SELECT
+        m.Status,
+        p.DurationLabel,
+        p.Price,
+        m.StartDate,
+        m.NextRenewalDate
+     FROM Memberships m
+     JOIN Plans p
+        ON m.PlanID = p.PlanID
+     WHERE m.MemberID = ?
+     ORDER BY m.StartDate DESC
+     LIMIT 1"
 );
+
 if ($membershipStmt) {
-    $membershipStmt->bind_param("i", $memberId);
+
+    $membershipStmt->bind_param(
+        "i",
+        $memberId
+    );
+
     $membershipStmt->execute();
-    $membership = $membershipStmt->get_result()->fetch_assoc();
+
+    $membershipResult =
+        $membershipStmt->get_result();
+
+    $membership =
+        $membershipResult
+            ? $membershipResult->fetch_assoc()
+            : null;
+
     $membershipStmt->close();
-    
+
     if ($membership) {
-        $memberContext .= "\nMembership Status: {$membership['Status']}\n";
-        $memberContext .= "Plan: {$membership['DurationLabel']} ({$membership['Price']})\n"; // fixed
-        $memberContext .= "Start Date: {$membership['StartDate']}\n";
-        if ($membership['NextRenewalDate']) {
-            $memberContext .= "Next Renewal: {$membership['NextRenewalDate']}\n";
+
+        $memberContext .=
+            "\nMembership Status: " .
+            ($membership['Status'] ?? '') .
+            "\n";
+
+        $memberContext .=
+            "Plan: " .
+            ($membership['DurationLabel'] ?? '') .
+            " (" .
+            ($membership['Price'] ?? '') .
+            ")\n";
+
+        $memberContext .=
+            "Start Date: " .
+            ($membership['StartDate'] ?? '') .
+            "\n";
+
+        if (!empty($membership['NextRenewalDate'])) {
+
+            $memberContext .=
+                "Next Renewal: " .
+                $membership['NextRenewalDate'] .
+                "\n";
         }
     }
 }
 
-// Attendance stats
+// ------------------------------------------------------------
+// ATTENDANCE STATS
+// ------------------------------------------------------------
+
 $attendanceStmt = $conn->prepare(
-    "SELECT COUNT(*) as total_visits, MAX(Date) as last_visit FROM AttendanceLogs WHERE MemberID = ?"
+    "SELECT
+        COUNT(*) AS total_visits,
+        MAX(Date) AS last_visit
+     FROM AttendanceLogs
+     WHERE MemberID = ?"
 );
+
 if ($attendanceStmt) {
-    $attendanceStmt->bind_param("i", $memberId);
+
+    $attendanceStmt->bind_param(
+        "i",
+        $memberId
+    );
+
     $attendanceStmt->execute();
-    $attendance = $attendanceStmt->get_result()->fetch_assoc();
+
+    $attendanceResult =
+        $attendanceStmt->get_result();
+
+    $attendance =
+        $attendanceResult
+            ? $attendanceResult->fetch_assoc()
+            : null;
+
     $attendanceStmt->close();
 
     if ($attendance) {
-        $memberContext .= "\nAttendance: {$attendance['total_visits']} total visits\n";
-        if ($attendance['last_visit']) {
-            $memberContext .= "Last Visit: {$attendance['last_visit']}\n";
+
+        $memberContext .=
+            "\nAttendance: " .
+            ($attendance['total_visits'] ?? 0) .
+            " total visits\n";
+
+        if (!empty($attendance['last_visit'])) {
+
+            $memberContext .=
+                "Last Visit: " .
+                $attendance['last_visit'] .
+                "\n";
         }
     }
 }
 
-// Body metrics
+// ------------------------------------------------------------
+// BODY METRICS
+// ------------------------------------------------------------
+
 $metricsStmt = $conn->prepare(
-    "SELECT Weight, BodyFatPercentage, MusclePercentage, BMI, MeasurementDate 
-     FROM BodyMetrics WHERE MemberID = ? ORDER BY MeasurementDate DESC LIMIT 1"
+    "SELECT
+        Weight,
+        BodyFatPercentage,
+        MusclePercentage,
+        BMI,
+        MeasurementDate
+     FROM BodyMetrics
+     WHERE MemberID = ?
+     ORDER BY MeasurementDate DESC
+     LIMIT 1"
 );
+
 if ($metricsStmt) {
-    $metricsStmt->bind_param("i", $memberId);
+
+    $metricsStmt->bind_param(
+        "i",
+        $memberId
+    );
+
     $metricsStmt->execute();
-    $metrics = $metricsStmt->get_result()->fetch_assoc();
+
+    $metricsResult =
+        $metricsStmt->get_result();
+
+    $metrics =
+        $metricsResult
+            ? $metricsResult->fetch_assoc()
+            : null;
+
     $metricsStmt->close();
 
     if ($metrics) {
-        $memberContext .= "\nLatest Body Metrics ({$metrics['MeasurementDate']}):\n";
-        $memberContext .= "Weight: {$metrics['Weight']} lbs, BMI: {$metrics['BMI']}\n";
-        if ($metrics['BodyFatPercentage']) {
-            $memberContext .= "Body Fat: {$metrics['BodyFatPercentage']}%, Muscle: {$metrics['MusclePercentage']}%\n";
+
+        $memberContext .=
+            "\nLatest Body Metrics (" .
+            ($metrics['MeasurementDate'] ?? '') .
+            "):\n";
+
+        $memberContext .=
+            "Weight: " .
+            ($metrics['Weight'] ?? '') .
+            " lbs, BMI: " .
+            ($metrics['BMI'] ?? '') .
+            "\n";
+
+        if (
+            isset($metrics['BodyFatPercentage']) &&
+            $metrics['BodyFatPercentage'] !== null
+        ) {
+
+            $memberContext .=
+                "Body Fat: " .
+                $metrics['BodyFatPercentage'] .
+                "%, Muscle: " .
+                ($metrics['MusclePercentage'] ?? '') .
+                "%\n";
         }
     }
 }
 
-// Personal records
+// ------------------------------------------------------------
+// PERSONAL RECORDS
+// ------------------------------------------------------------
+
 $recordsStmt = $conn->prepare(
-    "SELECT Exercise, Weight, Reps, DateAchieved FROM PersonalRecords 
-     WHERE MemberID = ? ORDER BY DateAchieved DESC LIMIT 5"
+    "SELECT
+        Exercise,
+        Weight,
+        Reps,
+        DateAchieved
+     FROM PersonalRecords
+     WHERE MemberID = ?
+     ORDER BY DateAchieved DESC
+     LIMIT 5"
 );
+
 if ($recordsStmt) {
-    $recordsStmt->bind_param("i", $memberId);
+
+    $recordsStmt->bind_param(
+        "i",
+        $memberId
+    );
+
     $recordsStmt->execute();
-    $records = $recordsStmt->get_result();
+
+    $recordsResult =
+        $recordsStmt->get_result();
 
     $recordsList = [];
-    while ($record = $records->fetch_assoc()) {
-        $recordsList[] = "{$record['Exercise']}: {$record['Weight']}lbs x{$record['Reps']}";
+
+    if ($recordsResult) {
+
+        while (
+            $record =
+                $recordsResult->fetch_assoc()
+        ) {
+
+            $recordsList[] =
+                ($record['Exercise'] ?? '') .
+                ": " .
+                ($record['Weight'] ?? '') .
+                "lbs x" .
+                ($record['Reps'] ?? '');
+        }
     }
+
     $recordsStmt->close();
 
     if (!empty($recordsList)) {
-        $memberContext .= "\nRecent PRs: " . implode(", ", $recordsList) . "\n";
+
+        $memberContext .=
+            "\nRecent PRs: " .
+            implode(", ", $recordsList) .
+            "\n";
     }
 }
 
-// Enrolled programs
+// ------------------------------------------------------------
+// ENROLLED PROGRAMS
+// ------------------------------------------------------------
+
 $programsStmt = $conn->prepare(
-    "SELECT DISTINCT p.ProgramName FROM ProgramEnrollments pe
-     JOIN Programs p ON pe.ProgramID = p.ProgramID
-     WHERE pe.MemberID = ? AND pe.Status = 'active'"
+    "SELECT DISTINCT
+        p.ProgramName
+     FROM ProgramEnrollments pe
+     JOIN Programs p
+        ON pe.ProgramID = p.ProgramID
+     WHERE pe.MemberID = ?
+       AND pe.Status = 'active'"
 );
+
 if ($programsStmt) {
-    $programsStmt->bind_param("i", $memberId);
+
+    $programsStmt->bind_param(
+        "i",
+        $memberId
+    );
+
     $programsStmt->execute();
+
+    $programsResult =
+        $programsStmt->get_result();
+
     $programsList = [];
-    $pgResult = $programsStmt->get_result();
-    while ($pg = $pgResult->fetch_assoc()) {
-        $programsList[] = $pg['ProgramName'];
+
+    if ($programsResult) {
+
+        while (
+            $pg =
+                $programsResult->fetch_assoc()
+        ) {
+
+            $programsList[] =
+                $pg['ProgramName'] ?? '';
+        }
     }
+
     $programsStmt->close();
 
     if (!empty($programsList)) {
-        $memberContext .= "\nEnrolled Programs: " . implode(", ", $programsList) . "\n";
+
+        $memberContext .=
+            "\nEnrolled Programs: " .
+            implode(", ", $programsList) .
+            "\n";
     }
 }
 
-$systemPrompt = "You are PrimeFit Gym's personalized fitness assistant. You help members achieve their fitness goals "
-    . "by providing guidance on workouts, nutrition, membership benefits, and gym features. "
-    . "You can access the member's personal data to give customized advice.\n\n"
-    . "MEMBER INFORMATION:\n"
-    . $memberContext
-    . "\nGYM FEATURES & PROGRAMS:\n"
-    . "- Classes: yoga, pilates, cardio, strength training, HIIT, CrossFit\n"
-    . "- Personal training available\n"
-    . "- Nutrition tracking and food logging\n"
-    . "- Progress tracking with body metrics\n"
-    . "- Monthly goal setting\n"
-    . "- QR check-ins for attendance\n\n"
-    . "INSTRUCTIONS:\n"
-    . "1. Be warm, encouraging, and supportive\n"
-    . "2. Use member's personal data to give customized fitness advice\n"
-    . "3. Suggest programs and classes based on their goals and progress\n"
-    . "4. Help them understand their membership benefits\n"
-    . "5. Track their progress and celebrate improvements\n"
-    . "6. Only if asked, direct them to speak with staff about billing or account issues";
+// ------------------------------------------------------------
+// SYSTEM PROMPT
+// ------------------------------------------------------------
+
+$systemPrompt =
+    "You are PrimeFit Gym's personalized fitness assistant. " .
+    "You help members achieve their fitness goals " .
+    "by providing guidance on workouts, nutrition, " .
+    "membership benefits, and gym features. " .
+    "You can access the member's personal data " .
+    "to give customized advice.\n\n" .
+
+    "MEMBER INFORMATION:\n" .
+    $memberContext .
+
+    "\nGYM FEATURES & PROGRAMS:\n" .
+    "- Classes: yoga, pilates, cardio, strength training, HIIT, CrossFit\n" .
+    "- Personal training available\n" .
+    "- Nutrition tracking and food logging\n" .
+    "- Progress tracking with body metrics\n" .
+    "- Monthly goal setting\n" .
+    "- QR check-ins for attendance\n\n" .
+
+    "INSTRUCTIONS:\n" .
+    "1. Be warm, encouraging, and supportive\n" .
+    "2. Use member's personal data to give customized fitness advice\n" .
+    "3. Suggest programs and classes based on their goals and progress\n" .
+    "4. Help them understand their membership benefits\n" .
+    "5. Track their progress and celebrate improvements\n" .
+    "6. Only if asked, direct them to speak with staff about billing or account issues";
+
+// ------------------------------------------------------------
+// BUILD GROQ MESSAGES
+// ------------------------------------------------------------
 
 $messages = array_merge(
-    [['role' => 'system', 'content' => $systemPrompt]],
+    [
+        [
+            'role' => 'system',
+            'content' => $systemPrompt
+        ]
+    ],
     $history,
-    [['role' => 'user', 'content' => $userMessage]]
+    [
+        [
+            'role' => 'user',
+            'content' => $userMessage
+        ]
+    ]
 );
+
+// ------------------------------------------------------------
+// GROQ MODELS
+// ------------------------------------------------------------
 
 $modelsToTry = [
     'openai/gpt-oss-120b',
-    'openai/gpt-oss-20b',
+    'openai/gpt-oss-20b'
 ];
 
 $response = null;
@@ -215,76 +685,353 @@ $httpCode = null;
 $curlError = '';
 
 foreach ($modelsToTry as $model) {
-    $ch = curl_init('https://api.groq.com/openai/v1/chat/completions');
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        'Content-Type: application/json',
-        'Authorization: Bearer ' . GROQ_API_KEY,
-    ]);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode([
+
+    $ch = curl_init(
+        'https://api.groq.com/openai/v1/chat/completions'
+    );
+
+    if ($ch === false) {
+
+        $curlError =
+            'Unable to initialize cURL.';
+
+        break;
+    }
+
+    $requestData = [
         'model' => $model,
         'messages' => $messages,
         'temperature' => 0.4,
-        'max_tokens' => 400,
-    ]));
+        'max_tokens' => 400
+    ];
+
+    $jsonRequest = json_encode(
+        $requestData,
+        JSON_UNESCAPED_UNICODE
+    );
+
+    if ($jsonRequest === false) {
+
+        $curlError =
+            'Failed to encode Groq request: ' .
+            json_last_error_msg();
+
+        curl_close($ch);
+
+        break;
+    }
+
+    curl_setopt(
+        $ch,
+        CURLOPT_RETURNTRANSFER,
+        true
+    );
+
+    curl_setopt(
+        $ch,
+        CURLOPT_POST,
+        true
+    );
+
+    curl_setopt(
+        $ch,
+        CURLOPT_TIMEOUT,
+        30
+    );
+
+    curl_setopt(
+        $ch,
+        CURLOPT_CONNECTTIMEOUT,
+        10
+    );
+
+    // Keep SSL verification enabled.
+    curl_setopt(
+        $ch,
+        CURLOPT_SSL_VERIFYPEER,
+        true
+    );
+
+    curl_setopt(
+        $ch,
+        CURLOPT_HTTPHEADER,
+        [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . GROQ_API_KEY
+        ]
+    );
+
+    curl_setopt(
+        $ch,
+        CURLOPT_POSTFIELDS,
+        $jsonRequest
+    );
 
     $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $curlError = curl_error($ch);
+
+    $httpCode =
+        curl_getinfo(
+            $ch,
+            CURLINFO_HTTP_CODE
+        );
+
+    $curlError =
+        curl_error($ch);
+
     curl_close($ch);
 
-    if ($httpCode === 200 || ($httpCode !== 400 && $httpCode !== 404)) {
+    error_log(
+        "GROQ MODEL: {$model}"
+    );
+
+    error_log(
+        "GROQ HTTP CODE: {$httpCode}"
+    );
+
+    error_log(
+        "GROQ RESPONSE: " .
+        substr((string)$response, 0, 1000)
+    );
+
+    // Successful response.
+    if ($httpCode === 200) {
+        break;
+    }
+
+    // If it isn't a model-not-found or bad-request error,
+    // don't unnecessarily try another model.
+    if (
+        $httpCode !== 400 &&
+        $httpCode !== 404
+    ) {
         break;
     }
 }
 
+// ------------------------------------------------------------
+// CURL ERROR
+// ------------------------------------------------------------
+
 if ($curlError) {
-    $errorMsg = 'Connection error: ' . $curlError;
-    error_log('Chatbot CURL Error: ' . $errorMsg);
+
+    $errorMsg =
+        'Connection error: ' .
+        $curlError;
+
+    error_log(
+        'CHATBOT CURL ERROR: ' .
+        $errorMsg
+    );
+
     http_response_code(503);
-    echo json_encode(['success' => false, 'error' => $errorMsg, 'code' => 'CURL_ERROR']);
+
+    echo json_encode([
+        'success' => false,
+        'error' => $errorMsg,
+        'code' => 'CURL_ERROR'
+    ]);
+
     exit();
 }
+
+// ------------------------------------------------------------
+// EMPTY GROQ RESPONSE
+// ------------------------------------------------------------
+
+if (
+    $response === false ||
+    $response === null ||
+    trim((string)$response) === ''
+) {
+
+    error_log(
+        'CHATBOT ERROR: Groq returned an empty response.'
+    );
+
+    http_response_code(502);
+
+    echo json_encode([
+        'success' => false,
+        'error' => 'Groq API returned an empty response.',
+        'code' => 'EMPTY_API_RESPONSE'
+    ]);
+
+    exit();
+}
+
+// ------------------------------------------------------------
+// GROQ HTTP ERROR
+// ------------------------------------------------------------
 
 if ($httpCode !== 200) {
-    $isHtml = strpos($response, '<html') !== false || strpos($response, '<body') !== false || strpos($response, '<') === 0;
+
+    $responseText =
+        (string)$response;
+
+    $isHtml =
+        strpos(
+            strtolower($responseText),
+            '<html'
+        ) !== false ||
+        strpos(
+            strtolower($responseText),
+            '<body'
+        ) !== false;
 
     if ($isHtml) {
-        $cleanError = strip_tags($response);
-        $cleanError = trim(preg_replace('/\s+/', ' ', $cleanError));
-        $errorMsg = 'API Error (HTTP ' . $httpCode . '): ' . substr($cleanError, 0, 300);
+
+        $cleanError =
+            strip_tags($responseText);
+
+        $cleanError =
+            trim(
+                preg_replace(
+                    '/\s+/',
+                    ' ',
+                    $cleanError
+                )
+            );
+
+        $errorMsg =
+            'API Error (HTTP ' .
+            $httpCode .
+            '): ' .
+            substr(
+                $cleanError,
+                0,
+                300
+            );
+
     } else {
-        $errorMsg = 'Groq API error (HTTP ' . $httpCode . '): ' . substr($response, 0, 300);
+
+        $errorMsg =
+            'Groq API error (HTTP ' .
+            $httpCode .
+            '): ' .
+            substr(
+                $responseText,
+                0,
+                500
+            );
     }
 
-    error_log('Chatbot API Error: ' . $errorMsg);
-    http_response_code($httpCode);
-    echo json_encode(['success' => false, 'error' => $errorMsg, 'code' => 'API_ERROR', 'http_code' => $httpCode]);
+    error_log(
+        'CHATBOT API ERROR: ' .
+        $errorMsg
+    );
+
+    http_response_code(
+        $httpCode >= 400
+            ? $httpCode
+            : 502
+    );
+
+    echo json_encode([
+        'success' => false,
+        'error' => $errorMsg,
+        'code' => 'API_ERROR',
+        'http_code' => $httpCode
+    ]);
+
     exit();
 }
 
-$data = json_decode($response, true);
-if (!$data || !isset($data['choices'][0]['message']['content'])) {
-    $errorMsg = 'Invalid response from Groq API';
-    error_log('Chatbot Invalid Response: ' . substr($response, 0, 300));
+// ------------------------------------------------------------
+// DECODE GROQ RESPONSE
+// ------------------------------------------------------------
+
+$data = json_decode(
+    $response,
+    true
+);
+
+if (
+    json_last_error() !== JSON_ERROR_NONE ||
+    !is_array($data)
+) {
+
+    error_log(
+        'CHATBOT INVALID GROQ JSON: ' .
+        json_last_error_msg()
+    );
+
+    error_log(
+        'CHATBOT RAW GROQ RESPONSE: ' .
+        substr($response, 0, 1000)
+    );
+
     http_response_code(502);
-    echo json_encode(['success' => false, 'error' => $errorMsg, 'code' => 'INVALID_RESPONSE']);
+
+    echo json_encode([
+        'success' => false,
+        'error' => 'Groq returned invalid JSON.',
+        'code' => 'INVALID_API_JSON'
+    ]);
+
     exit();
 }
 
-$reply = $data['choices'][0]['message']['content'];
+// ------------------------------------------------------------
+// EXTRACT AI REPLY
+// ------------------------------------------------------------
+
+if (
+    !isset(
+        $data['choices'][0]['message']['content']
+    )
+) {
+
+    error_log(
+        'CHATBOT INVALID GROQ STRUCTURE: ' .
+        substr($response, 0, 1000)
+    );
+
+    http_response_code(502);
+
+    echo json_encode([
+        'success' => false,
+        'error' => 'Invalid response from Groq API.',
+        'code' => 'INVALID_RESPONSE'
+    ]);
+
+    exit();
+}
+
+$reply =
+    trim(
+        (string)$data['choices'][0]['message']['content']
+    );
+
+if ($reply === '') {
+
+    http_response_code(502);
+
+    echo json_encode([
+        'success' => false,
+        'error' => 'Groq returned an empty reply.',
+        'code' => 'EMPTY_REPLY'
+    ]);
+
+    exit();
+}
+
+// ------------------------------------------------------------
+// FINAL JSON RESPONSE
+// ------------------------------------------------------------
 
 $responseData = [
     'success' => true,
     'reply' => $reply,
     'member_id' => $memberId,
-    'timestamp' => date('Y-m-d H:i:s'),
+    'timestamp' => date('Y-m-d H:i:s')
 ];
 
 http_response_code(200);
-echo json_encode($responseData);
+
+echo json_encode(
+    $responseData,
+    JSON_UNESCAPED_UNICODE
+);
+
+exit();
 ?>
