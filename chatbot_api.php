@@ -331,7 +331,7 @@ $geminiPayload = [
     'contents' => $contents,
     'generationConfig' => [
         'temperature' => 0.4,
-        'maxOutputTokens' => 400
+        'maxOutputTokens' => 1000
     ]
 ];
 
@@ -339,9 +339,7 @@ $geminiPayload = [
 // CALL GEMINI REST API (with automatic model fallback)
 // ------------------------------------------------------------
 
-// Includes standard stable models as default fallbacks so if one is overloaded (503), it tries the next.
-// You can also override this via Render environment variables: GEMINI_MODELS=gemini-3.7-flash,gemini-1.5-flash
-$geminiModelFallback = array_map('trim', explode(',', getenv('GEMINI_MODELS') ?: 'gemini-3.7-flash,gemini-1.5-flash,gemini-2.5-flash'));
+$geminiModelFallback = array_map('trim', explode(',', getenv('GEMINI_MODELS') ?: 'gemini-2.5-flash,gemini-1.5-flash,gemini-3.5-flash'));
 
 $httpCode = 0;
 $response = null;
@@ -378,7 +376,6 @@ foreach ($geminiModelFallback as $model) {
         break; // success
     }
 
-    // If 404 (deprecated), 503 (high demand/overloaded), or 429 (rate limited), try the next model fallback
     if ($httpCode === 404 || $httpCode === 503 || $httpCode === 429) {
         error_log("Gemini model '$model' returned HTTP $httpCode -- trying next fallback model.");
         continue; 
@@ -409,8 +406,14 @@ if ($httpCode !== 200) {
 // ------------------------------------------------------------
 
 $data = json_decode($response, true);
-$reply = $data['candidates'][0]['content']['parts'][0]['text'] ?? '';
+$candidate = $data['candidates'][0] ?? [];
+$reply = $candidate['content']['parts'][0]['text'] ?? '';
 $reply = trim((string)$reply);
+
+$finishReason = $candidate['finishReason'] ?? '';
+if ($finishReason === 'MAX_TOKENS') {
+    $reply .= "\n\n*(Note: I reached my maximum response length limit.)*";
+}
 
 if ($reply === '') {
     http_response_code(502);
