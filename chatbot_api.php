@@ -339,13 +339,9 @@ $geminiPayload = [
 // CALL GEMINI REST API (with automatic model fallback)
 // ------------------------------------------------------------
 
-// Reads the fallback list from Render's GEMINI_MODELS env variable
-// (comma-separated, newest model first), e.g.:
-//   GEMINI_MODELS = gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-2.5-flash
-// Falls back to a single default if the env variable isn't set.
-// To handle future Gemini model deprecations, just update GEMINI_MODELS
-// in the Render dashboard and redeploy -- no code changes needed.
-$geminiModelFallback = array_map('trim', explode(',', getenv('GEMINI_MODELS') ?: 'gemini-3.7-flash'));
+// Includes standard stable models as default fallbacks so if one is overloaded (503), it tries the next.
+// You can also override this via Render environment variables: GEMINI_MODELS=gemini-3.7-flash,gemini-1.5-flash
+$geminiModelFallback = array_map('trim', explode(',', getenv('GEMINI_MODELS') ?: 'gemini-3.7-flash,gemini-1.5-flash,gemini-2.5-flash'));
 
 $httpCode = 0;
 $response = null;
@@ -374,21 +370,20 @@ foreach ($geminiModelFallback as $model) {
     curl_close($ch);
 
     if ($curlError) {
-        // network-level failure, no point trying other models with the same connection issue
-        break;
+        break; // network-level failure
     }
 
     if ($httpCode === 200) {
         $usedModel = $model;
-        break; // success -- stop trying further models
+        break; // success
     }
 
-    if ($httpCode === 404) {
-        error_log("Gemini model '$model' returned 404 (likely deprecated) -- trying next fallback model.");
-        continue; // try the next model in the list
+    // If 404 (deprecated), 503 (high demand/overloaded), or 429 (rate limited), try the next model fallback
+    if ($httpCode === 404 || $httpCode === 503 || $httpCode === 429) {
+        error_log("Gemini model '$model' returned HTTP $httpCode -- trying next fallback model.");
+        continue; 
     }
 
-    // Any other error (429, 500, etc.) -- stop, it's not a model-name problem
     break;
 }
 
