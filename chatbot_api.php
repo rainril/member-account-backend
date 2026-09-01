@@ -192,12 +192,29 @@ $memberId = intval(
     $input['member_id'] ?? 0
 );
 
-$history = (
+$rawHistory = (
     isset($input['history']) &&
     is_array($input['history'])
 )
     ? $input['history']
     : [];
+
+// Filter history to strictly valid role/content elements
+$history = [];
+foreach ($rawHistory as $h) {
+    if (
+        is_array($h) &&
+        isset($h['role'], $h['content']) &&
+        is_string($h['role']) &&
+        is_string($h['content']) &&
+        trim($h['content']) !== ''
+    ) {
+        $history[] = [
+            'role' => trim($h['role']),
+            'content' => trim($h['content'])
+        ];
+    }
+}
 
 // ------------------------------------------------------------
 // VALIDATE MEMBER ID
@@ -553,7 +570,7 @@ if ($recordsStmt) {
 // SYSTEM PROMPT
 // ------------------------------------------------------------
 
-if (empty($memberContext)) {
+if (empty(trim($memberContext))) {
     $memberContext = "No specific member profile details retrieved.";
 }
 
@@ -610,7 +627,8 @@ $messages = array_merge(
 
 $modelsToTry = [
     'llama-3.3-70b-versatile',
-    'llama-3.1-8b-instant'
+    'llama3-8b-8192',
+    'mixtral-8x7b-32768'
 ];
 
 $response = null;
