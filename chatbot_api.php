@@ -504,15 +504,17 @@ if ($metricsStmt) {
 // PERSONAL RECORDS
 // ------------------------------------------------------------
 
+$// ------------------------------------------------------------
+// PERSONAL RECORDS
+// ------------------------------------------------------------
+
 $recordsStmt = $conn->prepare(
     "SELECT
         Exercise,
         Weight,
-        Reps,
-        DateAchieved
+        Reps
      FROM PersonalRecords
      WHERE MemberID = ?
-     ORDER BY DateAchieved DESC
      LIMIT 5"
 );
 
