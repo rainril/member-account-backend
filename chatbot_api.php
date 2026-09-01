@@ -336,24 +336,61 @@ $geminiPayload = [
 ];
 
 // ------------------------------------------------------------
-// CALL GEMINI REST API
+// CALL GEMINI REST API (with automatic model fallback)
 // ------------------------------------------------------------
 
-$apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=' . GEMINI_API_KEY;
+// Reads the fallback list from Render's GEMINI_MODELS env variable
+// (comma-separated, newest model first), e.g.:
+//   GEMINI_MODELS = gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-2.5-flash
+// Falls back to a single default if the env variable isn't set.
+// To handle future Gemini model deprecations, just update GEMINI_MODELS
+// in the Render dashboard and redeploy -- no code changes needed.
+$geminiModelFallback = array_map('trim', explode(',', getenv('GEMINI_MODELS') ?: 'gemini-3.7-flash'));
 
-$ch = curl_init($apiUrl);
-curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_POST, true);
-curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($geminiPayload, JSON_UNESCAPED_UNICODE));
+$httpCode = 0;
+$response = null;
+$curlError = '';
+$usedModel = null;
 
-$response = curl_exec($ch);
-$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-$curlError = curl_error($ch);
-curl_close($ch);
+foreach ($geminiModelFallback as $model) {
+    if ($model === '') {
+        continue;
+    }
+
+    $apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/' . $model . ':generateContent?key=' . GEMINI_API_KEY;
+
+    $ch = curl_init($apiUrl);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($geminiPayload, JSON_UNESCAPED_UNICODE));
+
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+
+    if ($curlError) {
+        // network-level failure, no point trying other models with the same connection issue
+        break;
+    }
+
+    if ($httpCode === 200) {
+        $usedModel = $model;
+        break; // success -- stop trying further models
+    }
+
+    if ($httpCode === 404) {
+        error_log("Gemini model '$model' returned 404 (likely deprecated) -- trying next fallback model.");
+        continue; // try the next model in the list
+    }
+
+    // Any other error (429, 500, etc.) -- stop, it's not a model-name problem
+    break;
+}
 
 if ($curlError) {
     http_response_code(503);
