@@ -276,6 +276,24 @@ if ($recordsStmt) {
     }
 }
 
+// AI Insights & Body Photos Feedback
+$insightsStmt = $conn->prepare("SELECT ai.InsightText, ai.Confidence, ai.Date, bp.UploadDate FROM AI_Insights ai JOIN BodyPhotos bp ON ai.PhotoID = bp.PhotoID WHERE bp.MemberID = ? ORDER BY bp.UploadDate DESC LIMIT 3");
+if ($insightsStmt) {
+    $insightsStmt->bind_param("i", $memberId);
+    $insightsStmt->execute();
+    $insightsResult = $insightsStmt->get_result();
+    $insightsList = [];
+    if ($insightsResult) {
+        while ($insight = $insightsResult->fetch_assoc()) {
+            $insightsList[] = "[" . ($insight['UploadDate'] ?? '') . "] " . ($insight['InsightText'] ?? '');
+        }
+    }
+    $insightsStmt->close();
+    if (!empty($insightsList)) {
+        $memberContext .= "\nRecent Body Photo AI Insights & Feedback:\n" . implode("\n", $insightsList) . "\n";
+    }
+}
+
 if (empty(trim($memberContext))) {
     $memberContext = "No specific member profile details retrieved.";
 }
