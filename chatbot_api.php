@@ -8,8 +8,6 @@
 // ERROR HANDLING
 // ------------------------------------------------------------
 
-// Never display PHP errors directly to the frontend.
-// The API must always return JSON.
 ini_set('display_errors', '0');
 error_reporting(0);
 
@@ -19,7 +17,6 @@ header('Access-Control-Allow-Methods: POST, OPTIONS, GET');
 header('Access-Control-Allow-Headers: Content-Type, Authorization');
 header('Access-Control-Max-Age: 3600');
 
-// Make sure fatal PHP errors don't result in an empty response.
 register_shutdown_function(function () {
     $error = error_get_last();
 
@@ -120,8 +117,6 @@ error_log(
     strlen($rawInput)
 );
 
-// Debug request body.
-// Keep this while troubleshooting.
 error_log(
     'CHATBOT RAW INPUT: ' .
     $rawInput
@@ -156,7 +151,6 @@ error_log(
     print_r($input, true)
 );
 
-// Check if JSON is valid.
 if (json_last_error() !== JSON_ERROR_NONE || !is_array($input)) {
 
     http_response_code(400);
@@ -504,10 +498,6 @@ if ($metricsStmt) {
 // PERSONAL RECORDS
 // ------------------------------------------------------------
 
-$// ------------------------------------------------------------
-// PERSONAL RECORDS
-// ------------------------------------------------------------
-
 $recordsStmt = $conn->prepare(
     "SELECT
         Exercise,
@@ -559,6 +549,40 @@ if ($recordsStmt) {
     }
 }
 
+// ------------------------------------------------------------
+// SYSTEM PROMPT
+// ------------------------------------------------------------
+
+if (empty($memberContext)) {
+    $memberContext = "No specific member profile details retrieved.";
+}
+
+$systemPrompt =
+    "You are PrimeFit Gym's personalized fitness assistant. " .
+    "You help members achieve their fitness goals " .
+    "by providing guidance on workouts, nutrition, " .
+    "membership benefits, and gym features. " .
+    "You can access the member's personal data " .
+    "to give customized advice.\n\n" .
+
+    "MEMBER INFORMATION:\n" .
+    (string)$memberContext .
+
+    "\n\nGYM FEATURES & PROGRAMS:\n" .
+    "- Classes: yoga, pilates, cardio, strength training, HIIT, CrossFit\n" .
+    "- Personal training available\n" .
+    "- Nutrition tracking and food logging\n" .
+    "- Progress tracking with body metrics\n" .
+    "- Monthly goal setting\n" .
+    "- QR check-ins for attendance\n\n" .
+
+    "INSTRUCTIONS:\n" .
+    "1. Be warm, encouraging, and supportive\n" .
+    "2. Use member's personal data to give customized fitness advice\n" .
+    "3. Suggest programs and classes based on their goals and progress\n" .
+    "4. Help them understand their membership benefits\n" .
+    "5. Track their progress and celebrate improvements\n" .
+    "6. Only if asked, direct them to speak with staff about billing or account issues";
 
 // ------------------------------------------------------------
 // BUILD GROQ MESSAGES
@@ -585,8 +609,8 @@ $messages = array_merge(
 // ------------------------------------------------------------
 
 $modelsToTry = [
-    'openai/gpt-oss-120b',
-    'openai/gpt-oss-20b'
+    'llama-3.3-70b-versatile',
+    'llama-3.1-8b-instant'
 ];
 
 $response = null;
@@ -654,7 +678,6 @@ foreach ($modelsToTry as $model) {
         10
     );
 
-    // Keep SSL verification enabled.
     curl_setopt(
         $ch,
         CURLOPT_SSL_VERIFYPEER,
@@ -702,13 +725,10 @@ foreach ($modelsToTry as $model) {
         substr((string)$response, 0, 1000)
     );
 
-    // Successful response.
     if ($httpCode === 200) {
         break;
     }
 
-    // If it isn't a model-not-found or bad-request error,
-    // don't unnecessarily try another model.
     if (
         $httpCode !== 400 &&
         $httpCode !== 404
