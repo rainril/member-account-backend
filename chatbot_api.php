@@ -454,13 +454,12 @@ if ($attendanceStmt) {
 $metricsStmt = $conn->prepare(
     "SELECT
         Weight,
-        BodyFatPercentage,
-        MusclePercentage,
+        Height,
         BMI,
-        MeasurementDate
+        RecordedAt
      FROM BodyMetrics
      WHERE MemberID = ?
-     ORDER BY MeasurementDate DESC
+     ORDER BY RecordedAt DESC
      LIMIT 1"
 );
 
@@ -487,28 +486,17 @@ if ($metricsStmt) {
 
         $memberContext .=
             "\nLatest Body Metrics (" .
-            ($metrics['MeasurementDate'] ?? '') .
+            ($metrics['RecordedAt'] ?? '') .
             "):\n";
 
         $memberContext .=
             "Weight: " .
             ($metrics['Weight'] ?? '') .
-            " lbs, BMI: " .
+            " kg, Height: " .
+            ($metrics['Height'] ?? '') .
+            " cm, BMI: " .
             ($metrics['BMI'] ?? '') .
             "\n";
-
-        if (
-            isset($metrics['BodyFatPercentage']) &&
-            $metrics['BodyFatPercentage'] !== null
-        ) {
-
-            $memberContext .=
-                "Body Fat: " .
-                $metrics['BodyFatPercentage'] .
-                "%, Muscle: " .
-                ($metrics['MusclePercentage'] ?? '') .
-                "%\n";
-        }
     }
 }
 
@@ -580,7 +568,7 @@ $programsStmt = $conn->prepare(
      JOIN Programs p
         ON pe.ProgramID = p.ProgramID
      WHERE pe.MemberID = ?
-       AND pe.Status = 'active'"
+        AND pe.Status = 'active'"
 );
 
 if ($programsStmt) {
