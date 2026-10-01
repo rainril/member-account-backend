@@ -29,6 +29,10 @@ RUN composer install --no-dev --optimize-autoloader --no-interaction
 
 # Now copy the rest of the backend code
 COPY . .
+# Create upload folders and give Apache (www-data) write permission
+RUN mkdir -p /var/www/html/uploads/body_photos \
+    && chown -R www-data:www-data /var/www/html/uploads \
+    && chmod -R 775 /var/www/html/uploads
 
 # Render assigns a dynamic port via $PORT env var.
 # Apache defaults to port 80, so we point it at $PORT instead.
