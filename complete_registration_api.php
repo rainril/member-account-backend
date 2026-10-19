@@ -44,12 +44,16 @@ $lastName      = trim($_POST["last_name"] ?? "");
 $email         = trim($_POST["email"] ?? "");
 $phone         = trim($_POST["phone"] ?? "");
 $dob           = $_POST["date_of_birth"] ?? null;
+$gender        = trim($_POST["gender"] ?? "");
 $address       = trim($_POST["address"] ?? "");
 $password      = $_POST["password"] ?? "";
 $planId        = intval($_POST["plan_id"] ?? 0);
 $paymentMethod = trim($_POST["payment_method"] ?? "");
 
 if ($dob === "") { $dob = null; }
+// Only accept known values -- anything else (including not provided)
+// is stored as NULL; gender is optional at registration.
+if (!in_array($gender, ["Male", "Female", "Other"], true)) { $gender = null; }
 if ($address === "") { $address = null; }
 if ($phone === "") { $phone = null; }
 
@@ -134,10 +138,10 @@ $conn->begin_transaction();
 try {
     // 4. Create the member
     $stmt = $conn->prepare(
-        "INSERT INTO Members (FirstName, LastName, Email, PasswordHash, Phone, DateOfBirth, Address)
-         VALUES (?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO Members (FirstName, LastName, Email, PasswordHash, Phone, DateOfBirth, Gender, Address)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     );
-    $stmt->bind_param("sssssss", $firstName, $lastName, $email, $passwordHash, $phone, $dob, $address);
+    $stmt->bind_param("ssssssss", $firstName, $lastName, $email, $passwordHash, $phone, $dob, $gender, $address);
     $stmt->execute();
     $memberId = $stmt->insert_id;
     $stmt->close();
@@ -196,6 +200,10 @@ try {
         "firstName"       => $firstName,
         "lastName"        => $lastName,
         "email"           => $email,
+        // bcrypt hash (PASSWORD_DEFAULT) -- lets the Admin/Owner Laravel app
+        // create a matching accounts row (role = 'customer') the member can
+        // log into for the PayMongo billing flow.
+        "passwordHash"    => $passwordHash,
         "planLabel"       => $planLabelForSync,
         "planPrice"       => (int) $price,
         "planMonths"      => $durationMonths,

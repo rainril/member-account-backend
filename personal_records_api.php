@@ -2,8 +2,10 @@
 // ============================================================
 // personal_records_api.php
 // GET    ?member_id=X       -> list a member's personal records
-// POST   { member_id, exercise, muscle, weight, sets, reps }
-//                           -> add a new personal record
+// POST   { member_id, exercise, muscle, weight, sets, reps, duration_seconds }
+//                           -> add a new personal record. duration_seconds
+//                              is optional -- only relevant for time-based
+//                              exercises (planks, cardio, etc.).
 // DELETE ?pr_id=X           -> delete a personal record
 // ============================================================
 
@@ -32,7 +34,7 @@ if ($method === "GET") {
     }
 
     $stmt = $conn->prepare(
-        "SELECT PRID, Exercise, Muscle, Weight, Sets, Reps, Date
+        "SELECT PRID, Exercise, Muscle, Weight, Sets, Reps, DurationSeconds, Date
          FROM PersonalRecords
          WHERE MemberID = ?
          ORDER BY Date DESC, PRID DESC"
@@ -64,6 +66,9 @@ if ($method === "POST") {
     $weight   = intval($data["weight"] ?? 0);
     $sets     = intval($data["sets"] ?? 0);
     $reps     = intval($data["reps"] ?? 0);
+    // Optional -- only time-based exercises (planks, cardio, etc.) set this.
+    $durationRaw = $data["duration_seconds"] ?? null;
+    $duration = ($durationRaw === null || $durationRaw === "") ? null : intval($durationRaw);
 
     if ($memberId <= 0 || empty($exercise) || empty($muscle)) {
         echo json_encode(["success" => false, "message" => "Missing exercise, muscle, or member ID."]);
@@ -71,10 +76,10 @@ if ($method === "POST") {
     }
 
     $stmt = $conn->prepare(
-        "INSERT INTO PersonalRecords (MemberID, Exercise, Muscle, Weight, Sets, Reps, Date)
-         VALUES (?, ?, ?, ?, ?, ?, CURDATE())"
+        "INSERT INTO PersonalRecords (MemberID, Exercise, Muscle, Weight, Sets, Reps, DurationSeconds, Date)
+         VALUES (?, ?, ?, ?, ?, ?, ?, CURDATE())"
     );
-    $stmt->bind_param("issiii", $memberId, $exercise, $muscle, $weight, $sets, $reps);
+    $stmt->bind_param("issiiii", $memberId, $exercise, $muscle, $weight, $sets, $reps, $duration);
     $stmt->execute();
     $prId = $stmt->insert_id;
     $stmt->close();

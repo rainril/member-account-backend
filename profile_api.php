@@ -31,7 +31,7 @@ if ($method === "GET") {
     }
 
     $stmt = $conn->prepare(
-        "SELECT FirstName, LastName, Email, Phone, DateOfBirth, Address, ProfilePictureURL
+        "SELECT FirstName, LastName, Email, Phone, DateOfBirth, Gender, Address, ProfilePictureURL
          FROM Members WHERE MemberID = ?"
     );
     $stmt->bind_param("i", $memberId);
@@ -61,6 +61,7 @@ if ($method === "POST") {
     $email     = trim($data["email"] ?? "");
     $phone     = trim($data["phone"] ?? "");
     $dob       = trim($data["date_of_birth"] ?? "");
+    $gender    = trim($data["gender"] ?? "");
     $address   = trim($data["address"] ?? "");
 
     if ($memberId <= 0 || empty($firstName) || empty($lastName) || empty($email)) {
@@ -69,6 +70,9 @@ if ($method === "POST") {
     }
 
     if ($dob === "") { $dob = null; }
+    // Only accept known values -- anything else (including an empty
+    // string / not provided) is stored as NULL rather than guessed.
+    if (!in_array($gender, ["Male", "Female", "Other"], true)) { $gender = null; }
     if ($address === "") { $address = null; }
     if ($phone === "") { $phone = null; }
 
@@ -87,10 +91,10 @@ if ($method === "POST") {
 
     $stmt = $conn->prepare(
         "UPDATE Members
-         SET FirstName = ?, LastName = ?, Email = ?, Phone = ?, DateOfBirth = ?, Address = ?
+         SET FirstName = ?, LastName = ?, Email = ?, Phone = ?, DateOfBirth = ?, Gender = ?, Address = ?
          WHERE MemberID = ?"
     );
-    $stmt->bind_param("ssssssi", $firstName, $lastName, $email, $phone, $dob, $address, $memberId);
+    $stmt->bind_param("sssssssi", $firstName, $lastName, $email, $phone, $dob, $gender, $address, $memberId);
     $stmt->execute();
     $stmt->close();
     $conn->close();
