@@ -109,9 +109,10 @@ if ($method === "POST") {
         exit();
     }
 
-    $protocol = isset($_SERVER["HTTPS"]) ? "https" : "http";
-    $host = $_SERVER["HTTP_HOST"];
-    $publicUrl = "$protocol://$host/memberaccount/uploads/body_photos/$filename";
+$protocol = "https";
+$host = $_SERVER["HTTP_HOST"];
+
+$publicUrl = "$protocol://$host/uploads/body_photos/$filename";
 
     // Save the BodyPhotos row
     $stmt = $conn->prepare(
