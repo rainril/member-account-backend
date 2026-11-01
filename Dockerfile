@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y \
 RUN docker-php-ext-install mysqli
 
 # Enable Apache mod_rewrite
-RUN a2enmod rewrite
+RUN a2enmod rewrite headers
 
 # Install Composer (needed since vendor/ is gitignored -- we install fresh here)
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer

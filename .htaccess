@@ -1,5 +1,14 @@
+# CORS is handled inside each PHP file.
+# Setting it here too sends the header twice and the browser blocks every request.
+#
+# <IfModule mod_headers.c>
+#     Header always set Access-Control-Allow-Origin "*"
+#     Header always set Access-Control-Allow-Methods "GET, POST, OPTIONS, PUT, DELETE"
+#     Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With"
+# </IfModule>
+# CORS for uploaded body progress photos
 <IfModule mod_headers.c>
-    Header always set Access-Control-Allow-Origin "*"
-    Header always set Access-Control-Allow-Methods "GET, POST, OPTIONS, PUT, DELETE"
-    Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With"
+    <FilesMatch "\.(jpg|jpeg|png|webp)$">
+        Header always set Access-Control-Allow-Origin "*"
+    </FilesMatch>
 </IfModule>
