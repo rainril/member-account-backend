@@ -8,6 +8,7 @@ header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type");
 header("Content-Type: application/json");
+header("Cache-Control: no-store");
 
 if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
     http_response_code(200);
@@ -15,6 +16,7 @@ if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
 }
 
 require "db_connect.php";
+require_once "member_session_helpers.php";
 
 $data = json_decode(file_get_contents("php://input"), true);
 $response = ["success" => false, "message" => ""];
@@ -57,38 +59,34 @@ if ($member && password_verify($password, $member["PasswordHash"])) {
     // Older signup records may already have an active membership even though
     // its initial receipt is still awaiting review. Do not allow login until
     // that membership has an approved payment.
-    if ($member['MembershipID'] !== null) {
-        $membershipId = (int) $member['MembershipID'];
-        $check = $conn->prepare("SELECT SUM(Status IN ('Pending', 'Failed')) AS unapproved_count, SUM(Status = 'Paid') AS paid_count FROM Payments WHERE MembershipID = ?");
-        $check->bind_param('i', $membershipId);
-        $check->execute();
-        $payment = $check->get_result()->fetch_assoc();
-        $check->close();
-        if ((int) ($payment['unapproved_count'] ?? 0) > 0 && (int) ($payment['paid_count'] ?? 0) === 0) {
-            echo json_encode(['success' => false, 'message' => 'Your payment has not been approved. Please contact the gym.']);
-            $conn->close();
-            exit();
-        }
+    if (!member_session_payment_approved($conn, $member)) {
+        echo json_encode(['success' => false, 'message' => 'Your payment has not been approved. Please contact the gym.']);
+        $conn->close();
+        exit();
+    }
+    try {
+        $token = bin2hex(random_bytes(32));
+        $hash = hash('sha256', $token);
+        $memberId = (int) $member['MemberID'];
+        $cleanup = $conn->prepare('DELETE FROM MemberSessions WHERE MemberID = ? AND ExpiresAt <= UTC_TIMESTAMP()');
+        $cleanup->bind_param('i', $memberId);
+        $cleanup->execute();
+        $cleanup->close();
+        $stmt = $conn->prepare('INSERT INTO MemberSessions (MemberID, TokenHash, CreatedAt, ExpiresAt) VALUES (?, ?, UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL 30 DAY))');
+        $stmt->bind_param('is', $memberId, $hash);
+        $stmt->execute();
+        $stmt->close();
+    } catch (Throwable $e) {
+        error_log('Could not create member session: ' . $e->getMessage());
+        http_response_code(503);
+        echo json_encode(['success' => false, 'message' => 'Sign-in is temporarily unavailable. Please try again.']);
+        $conn->close();
+        exit();
     }
     $response["success"] = true;
     $response["message"] = "Login successful.";
-    $response["member"] = [
-        "member_id"          => (int) $member["MemberID"],
-        "MemberID"           => (int) $member["MemberID"], // Included for strict casing fallback
-        "first_name"         => $member["FirstName"],
-        "last_name"          => $member["LastName"],
-        "email"              => $member["Email"],
-        "phone"              => $member["Phone"],
-        "profile_picture"    => $member["ProfilePictureURL"],
-        "member_since"       => $member["MemberSince"],
-        "membership_plan"    => $member["PlanLabel"],
-        "membership_status"  => $member["MembershipStatus"],
-        "next_renewal_date"  => $member["NextRenewalDate"],
-        "plan_price"         => $member["PlanPrice"],
-        "session_credits"    => $member["SessionCredits"],
-        "sessions_used"      => $member["SessionsUsed"],
-        "qr_code_data"       => $member["QRCodeData"],
-    ];
+    $response["member"] = member_session_payload($member);
+    $response["session_token"] = $token;
 } else {
     $response["message"] = "Invalid email or password.";
     if (!$member) {
