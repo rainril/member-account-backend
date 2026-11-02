@@ -64,8 +64,8 @@ if (!is_dir($uploadDir)) {
 }
 
 // Build a unique filename so each upload doesn't overwrite another
-$ext = strtolower(pathinfo($_FILES["photo"]["name"], PATHINFO_EXTENSION));
-$filename = "member_" . $memberId . "_" . time() . "." . $ext;
+$ext = ["image/jpeg" => "jpg", "image/png" => "png", "image/webp" => "webp"][$detectedType];
+$filename = "member_" . $memberId . "_" . time() . "_" . bin2hex(random_bytes(6)) . "." . $ext;
 $destPath = $uploadDir . $filename;
 
 if (!move_uploaded_file($_FILES["photo"]["tmp_name"], $destPath)) {
@@ -75,9 +75,13 @@ if (!move_uploaded_file($_FILES["photo"]["tmp_name"], $destPath)) {
 }
 
 // Build the public URL the Flutter app can load the image from
-$protocol = isset($_SERVER["HTTPS"]) ? "https" : "http";
+$forwardedProto = strtolower(trim(explode(',', $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')[0]));
+$isHttps = (!empty($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off') || $forwardedProto === 'https';
+$protocol = $isHttps ? "https" : "http";
 $host = $_SERVER["HTTP_HOST"];
-$publicUrl = "$protocol://$host/memberaccount/uploads/profile_pictures/$filename";
+$scriptDir = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/.');
+$basePath = $scriptDir === '' ? '' : $scriptDir;
+$publicUrl = "$protocol://$host$basePath/uploads/profile_pictures/$filename";
 
 // Save the URL to the member's row
 $stmt = $conn->prepare("UPDATE Members SET ProfilePictureURL = ? WHERE MemberID = ?");
