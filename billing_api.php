@@ -63,6 +63,13 @@ if (!is_array($body)) {
 // "action" -- query string (GET) or JSON body / form field (POST)
 $action = $_GET["action"] ?? $body["action"] ?? $_POST["action"] ?? "";
 
+// Admin receipt review is served by the authenticated admin backend.
+if (in_array($action, ['list_pending_receipts', 'approve_receipt', 'reject_receipt'], true)) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'message' => 'Admin authentication required.']);
+    exit;
+}
+
 // ------------------------------------------------------------
 // Call the PayMongo REST API. Returns [http_code, data, error, raw].
 // $attributes (if given) is wrapped as { "data": { "attributes": {...} } }.
@@ -103,10 +110,20 @@ function paymongo_call($method, $path, $attributes = null)
 // that is already 'Paid' is left alone. Returns true if it changed
 // anything (payment marked Paid / membership touched), false otherwise.
 // ------------------------------------------------------------
+function has_unapproved_initial_receipt($conn, $memberId)
+{
+    $stmt = $conn->prepare("SELECT 1 FROM Memberships ms WHERE ms.MemberID = ? AND EXISTS (SELECT 1 FROM Payments p WHERE p.MembershipID = ms.MembershipID AND p.Status IN ('Pending', 'Failed') AND p.ReceiptURL IS NOT NULL) AND NOT EXISTS (SELECT 1 FROM Payments paid WHERE paid.MembershipID = ms.MembershipID AND paid.Status = 'Paid') LIMIT 1");
+    $stmt->bind_param('i', $memberId);
+    $stmt->execute();
+    $found = (bool) $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $found;
+}
+
 function activate_membership_for_payment($conn, $paymentId)
 {
     $payStmt = $conn->prepare(
-        "SELECT PaymentID, MemberID, Amount, Status FROM payments WHERE PaymentID = ? LIMIT 1"
+        "SELECT PaymentID, MemberID, Amount, Status, ReceiptURL FROM Payments WHERE PaymentID = ? LIMIT 1"
     );
     $payStmt->bind_param("i", $paymentId);
     $payStmt->execute();
@@ -117,14 +134,20 @@ function activate_membership_for_payment($conn, $paymentId)
         return false; // unknown, or already processed
     }
 
+    // Manual receipts may only be approved by an authenticated admin.
+    if (!empty($payment['ReceiptURL'])) {
+        return false;
+    }
+
     $memberId   = (int) $payment["MemberID"];
     $amountPaid = (float) $payment["Amount"];
+    if (has_unapproved_initial_receipt($conn, $memberId)) return false;
 
     // Match the plan by price. The current plans all have distinct prices
     // (2400 / 2800 / 3500 / 4800), so this is unambiguous. If two plans
     // ever share a price, store a PlanID on the payments row instead.
     $planStmt = $conn->prepare(
-        "SELECT PlanID, DurationMonths FROM plans WHERE Price = ? ORDER BY DurationMonths ASC LIMIT 1"
+        "SELECT PlanID, DurationMonths FROM Plans WHERE Price = ? ORDER BY DurationMonths ASC LIMIT 1"
     );
     $planStmt->bind_param("d", $amountPaid);
     $planStmt->execute();
@@ -133,7 +156,7 @@ function activate_membership_for_payment($conn, $paymentId)
 
     if (!$plan) {
         // Still mark it Paid so it isn't stuck Pending forever.
-        $mark = $conn->prepare("UPDATE payments SET Status = 'Paid' WHERE PaymentID = ?");
+        $mark = $conn->prepare("UPDATE Payments SET Status = 'Paid' WHERE PaymentID = ?");
         $mark->bind_param("i", $paymentId);
         $mark->execute();
         $mark->close();
@@ -147,14 +170,14 @@ function activate_membership_for_payment($conn, $paymentId)
 
     $conn->begin_transaction();
     try {
-        $upd = $conn->prepare("UPDATE payments SET Status = 'Paid' WHERE PaymentID = ?");
+        $upd = $conn->prepare("UPDATE Payments SET Status = 'Paid' WHERE PaymentID = ?");
         $upd->bind_param("i", $paymentId);
         $upd->execute();
         $upd->close();
 
         // Extend the member's Active membership, or create one.
         $msStmt = $conn->prepare(
-            "SELECT MembershipID FROM memberships
+            "SELECT MembershipID FROM Memberships
              WHERE MemberID = ? AND Status = 'Active'
              ORDER BY MembershipID DESC LIMIT 1"
         );
@@ -168,7 +191,7 @@ function activate_membership_for_payment($conn, $paymentId)
             // Push the renewal date out by the plan's duration.
             // COALESCE guards against a NULL NextRenewalDate.
             $extend = $conn->prepare(
-                "UPDATE memberships
+                "UPDATE Memberships
                  SET NextRenewalDate = DATE_ADD(COALESCE(NextRenewalDate, CURDATE()), INTERVAL ? MONTH)
                  WHERE MembershipID = ?"
             );
@@ -177,7 +200,7 @@ function activate_membership_for_payment($conn, $paymentId)
             $extend->close();
         } else {
             $create = $conn->prepare(
-                "INSERT INTO memberships
+                "INSERT INTO Memberships
                     (MemberID, PlanID, StartDate, NextRenewalDate, Status, SessionCredits, SessionsUsed)
                  VALUES
                     (?, ?, CURDATE(), DATE_ADD(CURDATE(), INTERVAL ? MONTH), 'Active', ?, 0)"
@@ -189,7 +212,7 @@ function activate_membership_for_payment($conn, $paymentId)
         }
 
         // Link the payment to the membership so billing_history can join them.
-        $link = $conn->prepare("UPDATE payments SET MembershipID = ? WHERE PaymentID = ?");
+        $link = $conn->prepare("UPDATE Payments SET MembershipID = ? WHERE PaymentID = ?");
         $link->bind_param("ii", $membershipId, $paymentId);
         $link->execute();
         $link->close();
@@ -328,6 +351,12 @@ if ($action === "create_payment") {
         exit();
     }
 
+    if (has_unapproved_initial_receipt($conn, $memberId)) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Your registration is awaiting admin review.']);
+        exit();
+    }
+
     if ($method !== "gcash" && $method !== "paymaya") {
         $response["message"] = "method must be 'gcash' or 'paymaya'.";
         echo json_encode($response);
@@ -336,7 +365,7 @@ if ($action === "create_payment") {
 
     // 1. Look up the plan's real price server-side -- never trust an
     //    amount sent by the client.
-    $planStmt = $conn->prepare("SELECT DurationLabel, Price FROM plans WHERE PlanID = ?");
+    $planStmt = $conn->prepare("SELECT DurationLabel, Price FROM Plans WHERE PlanID = ?");
     $planStmt->bind_param("i", $planId);
     $planStmt->execute();
     $plan = $planStmt->get_result()->fetch_assoc();
@@ -386,7 +415,7 @@ if ($action === "create_payment") {
     //    until payment.paid; PaymentIntentID lets the webhook find this row.
     try {
         $insert = $conn->prepare(
-            "INSERT INTO payments (MemberID, MembershipID, Date, Amount, Method, Status, PaymentIntentID)
+            "INSERT INTO Payments (MemberID, MembershipID, Date, Amount, Method, Status, PaymentIntentID)
              VALUES (?, NULL, CURDATE(), ?, ?, 'Pending', ?)"
         );
         $insert->bind_param("idss", $memberId, $price, $method, $intentId);
@@ -412,7 +441,7 @@ if ($action === "create_payment") {
     $redirectUrl  = $attachAttr["next_action"]["redirect"]["url"] ?? "";
 
     if ($attachRes["http_code"] < 200 || $attachRes["http_code"] >= 300) {
-        $conn->query("UPDATE payments SET Status = 'Failed' WHERE PaymentID = $paymentId");
+        $conn->query("UPDATE Payments SET Status = 'Failed' WHERE PaymentID = $paymentId");
         $response["message"] = "Could not attach the payment method.";
         $response["paymongo_error"] = $attachRes["data"]["errors"] ?? $attachRes["raw"];
         echo json_encode($response);
@@ -458,6 +487,11 @@ if ($action === "create_payment") {
 // HTTP 200 -- even on failure -- and just logs what went wrong.
 // ============================================================
 if ($action === "webhook") {
+    if (PAYMONGO_WEBHOOK_SECRET === '') {
+        http_response_code(503);
+        echo json_encode(['success' => false, 'message' => 'Webhook is not configured.']);
+        exit();
+    }
     http_response_code(200);
 
     // 1. Verify the Paymongo-Signature header.
@@ -492,7 +526,7 @@ if ($action === "webhook") {
     try {
         if (($eventType === "payment.paid" || $eventType === "payment.failed") && $intentId !== "") {
             $find = $conn->prepare(
-                "SELECT PaymentID, Status FROM payments WHERE PaymentIntentID = ? LIMIT 1"
+                "SELECT PaymentID, Status FROM Payments WHERE PaymentIntentID = ? LIMIT 1"
             );
             $find->bind_param("s", $intentId);
             $find->execute();
@@ -513,7 +547,7 @@ if ($action === "webhook") {
                 // payment.failed -- don't clobber a payment that somehow
                 // already went through.
                 if ($row["Status"] !== "Paid") {
-                    $upd = $conn->prepare("UPDATE payments SET Status = 'Failed' WHERE PaymentID = ?");
+                    $upd = $conn->prepare("UPDATE Payments SET Status = 'Failed' WHERE PaymentID = ?");
                     $upd->bind_param("i", $paymentId);
                     $upd->execute();
                     $upd->close();
@@ -560,7 +594,7 @@ if ($action === "confirm_payment") {
     }
 
     // 1. Find our payment row and its stored PaymentIntent id.
-    $stmt = $conn->prepare("SELECT PaymentIntentID FROM payments WHERE PaymentID = ? LIMIT 1");
+    $stmt = $conn->prepare("SELECT PaymentIntentID FROM Payments WHERE PaymentID = ? LIMIT 1");
     $stmt->bind_param("i", $paymentId);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
@@ -649,7 +683,7 @@ if ($action === "submit_receipt") {
 
     // 1. Member email (for the filename, same pattern as
     //    complete_registration_api.php) + plan price (server-side only).
-    $mStmt = $conn->prepare("SELECT Email FROM members WHERE MemberID = ?");
+    $mStmt = $conn->prepare("SELECT Email FROM Members WHERE MemberID = ?");
     $mStmt->bind_param("i", $memberId);
     $mStmt->execute();
     $member = $mStmt->get_result()->fetch_assoc();
@@ -661,7 +695,7 @@ if ($action === "submit_receipt") {
         exit();
     }
 
-    $pStmt = $conn->prepare("SELECT Price FROM plans WHERE PlanID = ?");
+    $pStmt = $conn->prepare("SELECT Price FROM Plans WHERE PlanID = ?");
     $pStmt->bind_param("i", $planId);
     $pStmt->execute();
     $plan = $pStmt->get_result()->fetch_assoc();
@@ -703,7 +737,7 @@ if ($action === "submit_receipt") {
     //    OCR guess.
     try {
         $insert = $conn->prepare(
-            "INSERT INTO payments
+            "INSERT INTO Payments
                 (MemberID, MembershipID, Date, Amount, Method, Status, Purpose, ReceiptURL, OcrExtractedAmount, OcrExtractedReference)
              VALUES (?, NULL, CURDATE(), ?, ?, 'Pending', ?, ?, ?, ?)"
         );
@@ -744,9 +778,9 @@ if ($action === "list_pending_receipts") {
                 py.ReceiptURL, py.OcrExtractedAmount, py.OcrExtractedReference,
                 m.FirstName, m.LastName, m.Email,
                 pl.PlanID, pl.DurationLabel, pl.Price AS PlanPrice
-         FROM payments py
-         JOIN members m ON m.MemberID = py.MemberID
-         LEFT JOIN plans pl ON pl.Price = py.Amount
+         FROM Payments py
+         JOIN Members m ON m.MemberID = py.MemberID
+         LEFT JOIN Plans pl ON pl.Price = py.Amount
          WHERE py.Status = 'Pending' AND py.ReceiptURL IS NOT NULL
          ORDER BY py.Date DESC, py.PaymentID DESC";
 
@@ -805,7 +839,7 @@ if ($action === "approve_receipt") {
         exit();
     }
 
-    $stmt = $conn->prepare("SELECT Status FROM payments WHERE PaymentID = ? LIMIT 1");
+    $stmt = $conn->prepare("SELECT Status FROM Payments WHERE PaymentID = ? LIMIT 1");
     $stmt->bind_param("i", $paymentId);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
@@ -854,7 +888,7 @@ if ($action === "reject_receipt") {
         exit();
     }
 
-    $stmt = $conn->prepare("SELECT Status FROM payments WHERE PaymentID = ? LIMIT 1");
+    $stmt = $conn->prepare("SELECT Status FROM Payments WHERE PaymentID = ? LIMIT 1");
     $stmt->bind_param("i", $paymentId);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
@@ -871,7 +905,7 @@ if ($action === "reject_receipt") {
         exit();
     }
 
-    $upd = $conn->prepare("UPDATE payments SET Status = 'Failed' WHERE PaymentID = ?");
+    $upd = $conn->prepare("UPDATE Payments SET Status = 'Failed' WHERE PaymentID = ?");
     $upd->bind_param("i", $paymentId);
     $upd->execute();
     $upd->close();
@@ -903,7 +937,7 @@ if ($action === "payment_status") {
         exit();
     }
 
-    $stmt = $conn->prepare("SELECT Status FROM payments WHERE PaymentID = ? LIMIT 1");
+    $stmt = $conn->prepare("SELECT Status FROM Payments WHERE PaymentID = ? LIMIT 1");
     $stmt->bind_param("i", $paymentId);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
@@ -940,9 +974,9 @@ if ($action === "billing_history") {
         "SELECT py.PaymentID, py.Date, py.Amount, py.Method, py.Status, py.PaymentIntentID, py.MembershipID,
                 ms.StartDate, ms.NextRenewalDate, ms.Status AS MembershipStatus,
                 pl.PlanID, pl.DurationLabel, pl.DurationMonths, pl.Price
-         FROM payments py
-         LEFT JOIN memberships ms ON ms.MembershipID = py.MembershipID
-         LEFT JOIN plans pl ON pl.PlanID = ms.PlanID
+         FROM Payments py
+         LEFT JOIN Memberships ms ON ms.MembershipID = py.MembershipID
+         LEFT JOIN Plans pl ON pl.PlanID = ms.PlanID
          WHERE py.MemberID = ?
          ORDER BY py.Date DESC, py.PaymentID DESC"
     );

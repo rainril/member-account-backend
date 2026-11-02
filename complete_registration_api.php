@@ -29,6 +29,11 @@ if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
     exit();
 }
 
+// Registration must go through the admin-reviewed pending workflow.
+http_response_code(410);
+echo json_encode(["success" => false, "message" => "Please refresh the website and submit your registration again."]);
+exit();
+
 require "db_connect.php";
 require "qr_helper.php";
 require "email_helper.php";

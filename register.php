@@ -1,4 +1,7 @@
 <?php
+http_response_code(410);
+echo 'Please use the membership website to submit your registration for review.';
+exit;
 // ============================================================
 // register.php
 // Member registration form -> inserts into the `members` table

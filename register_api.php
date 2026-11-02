@@ -18,6 +18,11 @@ if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
     exit();
 }
 
+// Direct member creation bypasses payment review and is no longer supported.
+http_response_code(410);
+echo json_encode(["success" => false, "message" => "Please use the registration form for payment review."]);
+exit();
+
 require "db_connect.php";
 
 // 1. Read the JSON body sent by Flutter

@@ -30,7 +30,7 @@ if ($memberId <= 0) {
 }
 
 $stmt = $conn->prepare(
-    "SELECT SessionCredits, SessionsUsed
+    "SELECT MembershipID, SessionCredits, SessionsUsed
      FROM Memberships
      WHERE MemberID = ? AND Status = 'Active'
      ORDER BY StartDate DESC, MembershipID DESC LIMIT 1"
@@ -39,6 +39,20 @@ $stmt->bind_param("i", $memberId);
 $stmt->execute();
 $membership = $stmt->get_result()->fetch_assoc();
 $stmt->close();
+
+if ($membership) {
+    $membershipId = (int) $membership['MembershipID'];
+    $check = $conn->prepare("SELECT SUM(Status IN ('Pending', 'Failed')) AS unapproved_count, SUM(Status = 'Paid') AS paid_count FROM Payments WHERE MembershipID = ?");
+    $check->bind_param('i', $membershipId);
+    $check->execute();
+    $payment = $check->get_result()->fetch_assoc();
+    $check->close();
+    if ((int) ($payment['unapproved_count'] ?? 0) > 0 && (int) ($payment['paid_count'] ?? 0) === 0) {
+        $conn->close();
+        echo json_encode(['success' => false, 'account_pending' => true, 'message' => 'Your payment has not been approved.']);
+        exit();
+    }
+}
 
 // Count check-ins so far this week (Monday to today), for the
 // dashboard's "Visits this week" stat.

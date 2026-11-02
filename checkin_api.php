@@ -61,6 +61,17 @@ if (!$membership) {
     exit();
 }
 
+$membershipId = (int) $membership['MembershipID'];
+$paymentCheck = $conn->prepare("SELECT SUM(Status IN ('Pending', 'Failed')) AS unapproved_count, SUM(Status = 'Paid') AS paid_count FROM Payments WHERE MembershipID = ?");
+$paymentCheck->bind_param('i', $membershipId);
+$paymentCheck->execute();
+$paymentState = $paymentCheck->get_result()->fetch_assoc();
+$paymentCheck->close();
+if ((int) ($paymentState['unapproved_count'] ?? 0) > 0 && (int) ($paymentState['paid_count'] ?? 0) === 0) {
+    echo json_encode(['success' => false, 'message' => 'Payment is awaiting admin approval.']);
+    exit();
+}
+
 $sessionCredits = intval($membership["SessionCredits"]);
 $sessionsUsed   = intval($membership["SessionsUsed"]);
 

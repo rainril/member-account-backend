@@ -19,6 +19,11 @@ if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
     exit();
 }
 
+// This legacy endpoint marks payments paid without verification.
+http_response_code(410);
+echo json_encode(['success' => false, 'message' => 'Please submit a payment for admin review.']);
+exit();
+
 require "db_connect.php";
 
 $data = json_decode(file_get_contents("php://input"), true);

@@ -38,7 +38,7 @@ $stmt = $conn->prepare(
     "SELECT m.MemberID, m.FirstName, m.LastName, m.Email, m.PasswordHash,
             m.Phone, m.ProfilePictureURL, m.MemberSince, m.QRCodeData,
             p.DurationLabel AS PlanLabel, p.Price AS PlanPrice,
-            ms.StartDate, ms.NextRenewalDate, ms.Status AS MembershipStatus,
+            ms.MembershipID, ms.StartDate, ms.NextRenewalDate, ms.Status AS MembershipStatus,
             ms.SessionCredits, ms.SessionsUsed
      FROM Members m
      LEFT JOIN Memberships ms ON ms.MemberID = m.MemberID
@@ -54,6 +54,22 @@ $member = $result->fetch_assoc();
 $stmt->close();
 
 if ($member && password_verify($password, $member["PasswordHash"])) {
+    // Older signup records may already have an active membership even though
+    // its initial receipt is still awaiting review. Do not allow login until
+    // that membership has an approved payment.
+    if ($member['MembershipID'] !== null) {
+        $membershipId = (int) $member['MembershipID'];
+        $check = $conn->prepare("SELECT SUM(Status IN ('Pending', 'Failed')) AS unapproved_count, SUM(Status = 'Paid') AS paid_count FROM Payments WHERE MembershipID = ?");
+        $check->bind_param('i', $membershipId);
+        $check->execute();
+        $payment = $check->get_result()->fetch_assoc();
+        $check->close();
+        if ((int) ($payment['unapproved_count'] ?? 0) > 0 && (int) ($payment['paid_count'] ?? 0) === 0) {
+            echo json_encode(['success' => false, 'message' => 'Your payment has not been approved. Please contact the gym.']);
+            $conn->close();
+            exit();
+        }
+    }
     $response["success"] = true;
     $response["message"] = "Login successful.";
     $response["member"] = [
@@ -75,6 +91,16 @@ if ($member && password_verify($password, $member["PasswordHash"])) {
     ];
 } else {
     $response["message"] = "Invalid email or password.";
+    if (!$member) {
+        $pending = $conn->prepare("SELECT PasswordHash FROM PendingRegistrations WHERE Email = ? AND Status = 'Pending' LIMIT 1");
+        $pending->bind_param('s', $email);
+        $pending->execute();
+        $registration = $pending->get_result()->fetch_assoc();
+        $pending->close();
+        if ($registration && password_verify($password, $registration['PasswordHash'])) {
+            $response['message'] = 'Your registration is pending admin confirmation.';
+        }
+    }
 }
 
 $conn->close();
