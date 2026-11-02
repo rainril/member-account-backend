@@ -38,7 +38,7 @@
 
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Paymongo-Signature");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, Paymongo-Signature");
 header("Content-Type: application/json");
 
 if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
@@ -68,6 +68,12 @@ if (in_array($action, ['list_pending_receipts', 'approve_receipt', 'reject_recei
     http_response_code(403);
     echo json_encode(['success' => false, 'message' => 'Admin authentication required.']);
     exit;
+}
+
+$authenticatedMemberId = null;
+if (in_array($action, ['create_payment', 'confirm_payment', 'submit_receipt', 'payment_status', 'billing_history'], true)) {
+    require_once __DIR__ . '/member_session_helpers.php';
+    $authenticatedMemberId = member_session_auth_member_id($conn);
 }
 
 // ------------------------------------------------------------
@@ -341,7 +347,7 @@ if ($action === "create_payment") {
         exit();
     }
 
-    $memberId = (int) ($body["member_id"] ?? 0);
+    $memberId = member_session_resolve_member_id($conn, (int) ($body["member_id"] ?? 0));
     $planId   = (int) ($body["plan_id"] ?? 0);
     $method   = strtolower(trim($body["method"] ?? ""));
 
@@ -594,8 +600,8 @@ if ($action === "confirm_payment") {
     }
 
     // 1. Find our payment row and its stored PaymentIntent id.
-    $stmt = $conn->prepare("SELECT PaymentIntentID FROM Payments WHERE PaymentID = ? LIMIT 1");
-    $stmt->bind_param("i", $paymentId);
+    $stmt = $conn->prepare("SELECT PaymentIntentID, MemberID FROM Payments WHERE PaymentID = ? AND MemberID = ? LIMIT 1");
+    $stmt->bind_param("ii", $paymentId, $authenticatedMemberId);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
@@ -657,7 +663,7 @@ if ($action === "submit_receipt") {
         exit();
     }
 
-    $memberId = (int) ($_POST["member_id"] ?? 0);
+    $memberId = member_session_resolve_member_id($conn, (int) ($_POST["member_id"] ?? 0));
     $planId   = (int) ($_POST["plan_id"] ?? 0);
     $method   = strtolower(trim($_POST["method"] ?? ""));
     $purpose  = trim($_POST["purpose"] ?? "New Registration");
@@ -937,8 +943,8 @@ if ($action === "payment_status") {
         exit();
     }
 
-    $stmt = $conn->prepare("SELECT Status FROM Payments WHERE PaymentID = ? LIMIT 1");
-    $stmt->bind_param("i", $paymentId);
+    $stmt = $conn->prepare("SELECT Status FROM Payments WHERE PaymentID = ? AND MemberID = ? LIMIT 1");
+    $stmt->bind_param("ii", $paymentId, $authenticatedMemberId);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
@@ -963,7 +969,7 @@ if ($action === "payment_status") {
 if ($action === "billing_history") {
     $response = ["success" => false, "message" => ""];
 
-    $memberId = (int) ($_GET["member_id"] ?? 0);
+    $memberId = member_session_resolve_member_id($conn, (int) ($_GET["member_id"] ?? 0));
     if ($memberId <= 0) {
         $response["message"] = "member_id is required.";
         echo json_encode($response);

@@ -7,7 +7,7 @@
 
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
 header("Content-Type: application/json");
 
 if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
@@ -16,8 +16,9 @@ if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
 }
 
 require "db_connect.php";
+require_once __DIR__ . '/member_session_helpers.php';
 
-$memberId     = intval($_POST["member_id"] ?? 0);
+$memberId     = member_session_resolve_member_id($conn, intval($_POST["member_id"] ?? 0));
 $membershipId = intval($_POST["membership_id"] ?? 0);
 $amount       = floatval($_POST["amount"] ?? 0);
 $method       = $_POST["method"] ?? "GCash";
@@ -25,6 +26,19 @@ $method       = $_POST["method"] ?? "GCash";
 if ($memberId <= 0 || $amount <= 0) {
     echo json_encode(["success" => false, "message" => "Missing required fields."]);
     exit();
+}
+
+if ($membershipId > 0) {
+    $membershipCheck = $conn->prepare('SELECT 1 FROM Memberships WHERE MembershipID = ? AND MemberID = ? LIMIT 1');
+    $membershipCheck->bind_param('ii', $membershipId, $memberId);
+    $membershipCheck->execute();
+    $belongsToMember = (bool) $membershipCheck->get_result()->fetch_row();
+    $membershipCheck->close();
+    if (!$belongsToMember) {
+        http_response_code(403);
+        echo json_encode(["success" => false, "message" => "Membership does not belong to this account."]);
+        exit();
+    }
 }
 
 if (!isset($_FILES["receipt"]) || $_FILES["receipt"]["error"] !== UPLOAD_ERR_OK) {

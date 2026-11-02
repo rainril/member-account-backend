@@ -55,6 +55,7 @@ set_exception_handler(function ($e) {
 });
 
 require "db_connect.php";
+require_once __DIR__ . '/member_session_helpers.php';
 
 $method = $_SERVER["REQUEST_METHOD"];
 
@@ -62,7 +63,7 @@ $method = $_SERVER["REQUEST_METHOD"];
 // GET: list all personal records for a member, newest first
 // ------------------------------------------------------------
 if ($method === "GET") {
-    $memberId = intval($_GET["member_id"] ?? 0);
+    $memberId = member_session_resolve_member_id($conn, intval($_GET["member_id"] ?? 0));
     if ($memberId <= 0) {
         echo json_encode(["success" => false, "message" => "Missing member_id."]);
         exit();
@@ -98,7 +99,7 @@ if ($method === "POST") {
         $data = $_POST; // fallback for form-encoded requests
     }
 
-    $memberId = intval($data["member_id"] ?? 0);
+    $memberId = member_session_resolve_member_id($conn, intval($data["member_id"] ?? 0));
     $exercise = trim($data["exercise"] ?? "");
     $muscle   = trim($data["muscle"] ?? "");
     $weight   = floatval($data["weight"] ?? 0);
@@ -138,13 +139,14 @@ if ($method === "POST") {
 // ------------------------------------------------------------
 if ($method === "DELETE") {
     $prId = intval($_GET["pr_id"] ?? 0);
+    $memberId = member_session_auth_member_id($conn);
     if ($prId <= 0) {
         echo json_encode(["success" => false, "message" => "Missing pr_id."]);
         exit();
     }
 
-    $stmt = $conn->prepare("DELETE FROM PersonalRecords WHERE PRID = ?");
-    $stmt->bind_param("i", $prId);
+    $stmt = $conn->prepare("DELETE FROM PersonalRecords WHERE PRID = ? AND MemberID = ?");
+    $stmt->bind_param("ii", $prId, $memberId);
     $stmt->execute();
     $stmt->close();
     $conn->close();

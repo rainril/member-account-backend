@@ -8,7 +8,7 @@
 
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
 header("Content-Type: application/json");
 
 if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
@@ -17,6 +17,7 @@ if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
 }
 
 require "db_connect.php";
+require_once __DIR__ . '/member_session_helpers.php';
 
 $method = $_SERVER["REQUEST_METHOD"];
 
@@ -24,7 +25,7 @@ $method = $_SERVER["REQUEST_METHOD"];
 // GET: fetch the member's current profile
 // ------------------------------------------------------------
 if ($method === "GET") {
-    $memberId = intval($_GET["member_id"] ?? 0);
+    $memberId = member_session_resolve_member_id($conn, intval($_GET["member_id"] ?? 0));
     if ($memberId <= 0) {
         echo json_encode(["success" => false, "message" => "Missing member_id."]);
         exit();
@@ -55,7 +56,7 @@ if ($method === "GET") {
 if ($method === "POST") {
     $data = json_decode(file_get_contents("php://input"), true);
 
-    $memberId  = intval($data["member_id"] ?? 0);
+    $memberId  = member_session_resolve_member_id($conn, intval($data["member_id"] ?? 0));
     $firstName = trim($data["first_name"] ?? "");
     $lastName  = trim($data["last_name"] ?? "");
     $email     = trim($data["email"] ?? "");

@@ -16,7 +16,7 @@ ini_set('error_log', __DIR__ . '/sync_debug.log');
 
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
 header("Content-Type: application/json");
 
 if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
@@ -25,6 +25,7 @@ if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
 }
 
 require "db_connect.php";
+require_once __DIR__ . '/member_session_helpers.php';
 require "ai_config.php";
 require "progress_context_helper.php";
 
@@ -35,7 +36,7 @@ $method = $_SERVER["REQUEST_METHOD"];
 // insight text saved for each
 // ------------------------------------------------------------
 if ($method === "GET") {
-    $memberId = intval($_GET["member_id"] ?? 0);
+    $memberId = member_session_resolve_member_id($conn, intval($_GET["member_id"] ?? 0));
     if ($memberId <= 0) {
         echo json_encode(["success" => false, "message" => "Missing member_id."]);
         exit();
@@ -54,6 +55,9 @@ if ($method === "GET") {
 
     $photos = [];
     while ($row = $result->fetch_assoc()) {
+        // Serve progress photos through an authenticated endpoint. Keep the
+        // original storage path private so another member cannot fetch it.
+        $row['PhotoURL'] = 'https://' . $_SERVER['HTTP_HOST'] . '/body_photo_file_api.php?photo_id=' . (int) $row['PhotoID'];
         $photos[] = $row;
     }
     $stmt->close();
@@ -67,7 +71,7 @@ if ($method === "GET") {
 // POST: upload a new body photo
 // ------------------------------------------------------------
 if ($method === "POST") {
-    $memberId = intval($_POST["member_id"] ?? 0);
+    $memberId = member_session_resolve_member_id($conn, intval($_POST["member_id"] ?? 0));
     if ($memberId <= 0) {
         echo json_encode(["success" => false, "message" => "Missing member_id."]);
         exit();
@@ -100,8 +104,8 @@ if ($method === "POST") {
         mkdir($uploadDir, 0777, true);
     }
 
-    $ext = strtolower(pathinfo($_FILES["photo"]["name"], PATHINFO_EXTENSION));
-    $filename = "photo_" . $memberId . "_" . time() . "." . $ext;
+    $ext = ["image/jpeg" => "jpg", "image/png" => "png", "image/webp" => "webp"][$detectedType];
+    $filename = "photo_" . $memberId . "_" . time() . "_" . bin2hex(random_bytes(6)) . "." . $ext;
     $destPath = $uploadDir . $filename;
 
     if (!move_uploaded_file($_FILES["photo"]["tmp_name"], $destPath)) {
@@ -112,16 +116,17 @@ if ($method === "POST") {
 $protocol = "https";
 $host = $_SERVER["HTTP_HOST"];
 
-$publicUrl = "$protocol://$host/uploads/body_photos/$filename";
+$storedPath = "uploads/body_photos/$filename";
 
     // Save the BodyPhotos row
     $stmt = $conn->prepare(
         "INSERT INTO BodyPhotos (MemberID, PhotoURL, UploadDate) VALUES (?, ?, CURDATE())"
     );
-    $stmt->bind_param("is", $memberId, $publicUrl);
+    $stmt->bind_param("is", $memberId, $storedPath);
     $stmt->execute();
     $photoId = $stmt->insert_id;
     $stmt->close();
+    $privatePhotoUrl = "$protocol://$host/body_photo_file_api.php?photo_id=$photoId";
 
     // ------------------------------------------------------------
     // Build a data-grounded prompt: the member's real BMI, weight,
@@ -275,7 +280,7 @@ $publicUrl = "$protocol://$host/uploads/body_photos/$filename";
         "success"  => true,
         "message"  => "Photo uploaded.",
         "photo_id" => $photoId,
-        "url"      => $publicUrl,
+        "url"      => $privatePhotoUrl,
         "date"     => date("Y-m-d"),
         "insight"  => $insightText,
     ]);
@@ -287,18 +292,19 @@ $publicUrl = "$protocol://$host/uploads/body_photos/$filename";
 // ------------------------------------------------------------
 if ($method === "DELETE") {
     $photoId = intval($_GET["photo_id"] ?? 0);
+    $memberId = member_session_auth_member_id($conn);
     if ($photoId <= 0) {
         echo json_encode(["success" => false, "message" => "Missing photo_id."]);
         exit();
     }
 
-    $delInsight = $conn->prepare("DELETE FROM AI_Insights WHERE PhotoID = ?");
-    $delInsight->bind_param("i", $photoId);
+    $delInsight = $conn->prepare("DELETE ai FROM AI_Insights ai INNER JOIN BodyPhotos bp ON bp.PhotoID = ai.PhotoID WHERE ai.PhotoID = ? AND bp.MemberID = ?");
+    $delInsight->bind_param("ii", $photoId, $memberId);
     $delInsight->execute();
     $delInsight->close();
 
-    $delPhoto = $conn->prepare("DELETE FROM BodyPhotos WHERE PhotoID = ?");
-    $delPhoto->bind_param("i", $photoId);
+    $delPhoto = $conn->prepare("DELETE FROM BodyPhotos WHERE PhotoID = ? AND MemberID = ?");
+    $delPhoto->bind_param("ii", $photoId, $memberId);
     $delPhoto->execute();
     $delPhoto->close();
     $conn->close();

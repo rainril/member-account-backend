@@ -11,7 +11,7 @@
 header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type');
+header('Access-Control-Allow-Headers: Content-Type, Authorization');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
@@ -19,6 +19,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 require_once 'ai_config.php';
+require_once 'db_connect.php';
+require_once 'member_session_helpers.php';
+member_session_resolve_member_id($conn, intval($_POST['member_id'] ?? 0));
 
 const MAX_CHAT_IMAGES = 10;
 $allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];

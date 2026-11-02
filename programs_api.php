@@ -11,7 +11,7 @@
 
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
 header("Content-Type: application/json");
 
 if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
@@ -20,6 +20,8 @@ if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
 }
 
 require "db_connect.php";
+require_once __DIR__ . '/member_session_helpers.php';
+$authenticatedMemberId = member_session_auth_member_id($conn);
 
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
     handleCreateProgram($conn);
@@ -30,27 +32,39 @@ $response = ["success" => false, "programs" => []];
 
 try {
     // 1. Fetch all programs
-    $programsResult = $conn->query("SELECT * FROM Programs ORDER BY ProgramID");
+    $programsStmt = $conn->prepare("SELECT * FROM Programs WHERE CreatedByMemberID IS NULL OR CreatedByMemberID = ? ORDER BY ProgramID");
+    $programsStmt->bind_param("i", $authenticatedMemberId);
+    $programsStmt->execute();
+    $programsResult = $programsStmt->get_result();
     $programs = [];
     while ($row = $programsResult->fetch_assoc()) {
         $row["days"] = [];
         $programs[$row["ProgramID"]] = $row;
     }
+    $programsStmt->close();
 
     // 2. Fetch all days, grouped under their program
-    $daysResult = $conn->query("SELECT * FROM ProgramDays ORDER BY ProgramID, DisplayOrder");
+    $daysStmt = $conn->prepare("SELECT pd.* FROM ProgramDays pd JOIN Programs p ON p.ProgramID = pd.ProgramID WHERE p.CreatedByMemberID IS NULL OR p.CreatedByMemberID = ? ORDER BY pd.ProgramID, pd.DisplayOrder");
+    $daysStmt->bind_param("i", $authenticatedMemberId);
+    $daysStmt->execute();
+    $daysResult = $daysStmt->get_result();
     $daysByProgram = [];
     while ($day = $daysResult->fetch_assoc()) {
         $day["exercises"] = [];
         $daysByProgram[$day["ProgramDayID"]] = $day;
         $programs[$day["ProgramID"]]["days"][] = $day["ProgramDayID"];
     }
+    $daysStmt->close();
 
     // 3. Fetch all exercises, grouped under their day
-    $exResult = $conn->query("SELECT * FROM ProgramExercises ORDER BY ProgramDayID, DisplayOrder");
+    $exStmt = $conn->prepare("SELECT pe.* FROM ProgramExercises pe JOIN ProgramDays pd ON pd.ProgramDayID = pe.ProgramDayID JOIN Programs p ON p.ProgramID = pd.ProgramID WHERE p.CreatedByMemberID IS NULL OR p.CreatedByMemberID = ? ORDER BY pe.ProgramDayID, pe.DisplayOrder");
+    $exStmt->bind_param("i", $authenticatedMemberId);
+    $exStmt->execute();
+    $exResult = $exStmt->get_result();
     while ($ex = $exResult->fetch_assoc()) {
         $daysByProgram[$ex["ProgramDayID"]]["exercises"][] = $ex;
     }
+    $exStmt->close();
 
     // 4. Assemble the final nested structure
     $finalPrograms = [];
@@ -77,7 +91,7 @@ echo json_encode($response);
 function handleCreateProgram($conn) {
     $response = ["success" => false, "message" => ""];
 
-    $memberId    = intval($_POST["member_id"] ?? 0);
+    $memberId    = member_session_resolve_member_id($conn, intval($_POST["member_id"] ?? 0));
     $programName = trim($_POST["program_name"] ?? "");
     $muscleGroup = trim($_POST["muscle_group"] ?? "");
     $description = trim($_POST["description"] ?? "");

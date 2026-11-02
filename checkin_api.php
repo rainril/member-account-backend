@@ -7,7 +7,7 @@
 
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
 header("Content-Type: application/json");
 
 if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
@@ -16,6 +16,7 @@ if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
 }
 
 require "db_connect.php";
+require_once __DIR__ . '/member_session_helpers.php';
 require "qr_helper.php";
 
 $data = json_decode(file_get_contents("php://input"), true);
@@ -36,6 +37,8 @@ if ($qrToken !== null) {
 } else {
     $memberId = intval($data["member_id"] ?? 0);
 }
+
+$memberId = member_session_resolve_member_id($conn, (int) $memberId);
 
 if ($memberId <= 0) {
     $response["message"] = "Missing member ID.";
