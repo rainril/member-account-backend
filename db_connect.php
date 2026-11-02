@@ -13,10 +13,16 @@ mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
 $conn = mysqli_init();
 
-// Aiven requires SSL for all connections
-$conn->ssl_set(null, null, $ca_cert, null, null);
+// Aiven (remote) requires SSL; local XAMPP does not support it.
+$isLocal = in_array($host, ['localhost', '127.0.0.1', '::1'], true);
+$flags = 0;
 
-$connected = $conn->real_connect($host, $username, $password, $database, (int)$port, null, MYSQLI_CLIENT_SSL);
+if (!$isLocal) {
+    $conn->ssl_set(null, null, $ca_cert, null, null);
+    $flags = MYSQLI_CLIENT_SSL;
+}
+
+$connected = $conn->real_connect($host, $username, $password, $database, (int)$port, null, $flags);
 
 if (!$connected) {
     die("Connection failed: " . mysqli_connect_error());

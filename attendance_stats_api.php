@@ -43,7 +43,7 @@ if ($memberId <= 0) {
 $membershipStmt = $conn->prepare(
     "SELECT CreatedAt FROM Memberships
      WHERE MemberID = ? AND Status = 'Active'
-     ORDER BY MembershipID DESC LIMIT 1"
+     ORDER BY StartDate DESC, MembershipID DESC LIMIT 1"
 );
 $membershipStmt->bind_param("i", $memberId);
 $membershipStmt->execute();

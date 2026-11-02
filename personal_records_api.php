@@ -9,15 +9,50 @@
 // DELETE ?pr_id=X           -> delete a personal record
 // ============================================================
 
-header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type");
-header("Content-Type: application/json");
+// ------------------------------------------------------------
+// CORS (must run before ANY output)
+// ------------------------------------------------------------
+// Add your deployed frontend URL(s) here, e.g. "https://primefit.vercel.app"
+$allowedOrigins = [
+    // "https://your-app.vercel.app",
+];
 
+$origin = $_SERVER["HTTP_ORIGIN"] ?? "";
+$isLocalOrigin = (bool) preg_match('#^https?://(localhost|127\.0\.0\.1)(:\d+)?$#', $origin);
+
+if ($origin !== "" && ($isLocalOrigin || in_array($origin, $allowedOrigins, true))) {
+    // Known origin: echo it back (works with or without credentials)
+    header("Access-Control-Allow-Origin: $origin");
+    header("Access-Control-Allow-Credentials: true");
+    header("Vary: Origin");
+} else {
+    // Unknown / no origin: keep the old open behaviour (no credentials)
+    header("Access-Control-Allow-Origin: *");
+}
+
+header("Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, Accept, X-Requested-With, X-Member-Id");
+header("Access-Control-Max-Age: 86400");
+header("Content-Type: application/json; charset=utf-8");
+
+// Preflight request: answer immediately, no DB needed
 if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
-    http_response_code(200);
+    http_response_code(204);
     exit();
 }
+
+// ------------------------------------------------------------
+// Always return JSON, even on errors (so the browser never sees
+// a dead request / "Failed to fetch" because of a PHP crash)
+// ------------------------------------------------------------
+set_exception_handler(function ($e) {
+    http_response_code(500);
+    echo json_encode([
+        "success" => false,
+        "message" => "Server error: " . $e->getMessage(),
+    ]);
+    exit();
+});
 
 require "db_connect.php";
 
@@ -59,18 +94,22 @@ if ($method === "GET") {
 // ------------------------------------------------------------
 if ($method === "POST") {
     $data = json_decode(file_get_contents("php://input"), true);
+    if (!is_array($data)) {
+        $data = $_POST; // fallback for form-encoded requests
+    }
 
     $memberId = intval($data["member_id"] ?? 0);
     $exercise = trim($data["exercise"] ?? "");
     $muscle   = trim($data["muscle"] ?? "");
-    $weight   = intval($data["weight"] ?? 0);
+    $weight   = floatval($data["weight"] ?? 0);
     $sets     = intval($data["sets"] ?? 0);
     $reps     = intval($data["reps"] ?? 0);
+
     // Optional -- only time-based exercises (planks, cardio, etc.) set this.
     $durationRaw = $data["duration_seconds"] ?? null;
     $duration = ($durationRaw === null || $durationRaw === "") ? null : intval($durationRaw);
 
-    if ($memberId <= 0 || empty($exercise) || empty($muscle)) {
+    if ($memberId <= 0 || $exercise === "" || $muscle === "") {
         echo json_encode(["success" => false, "message" => "Missing exercise, muscle, or member ID."]);
         exit();
     }
@@ -79,7 +118,7 @@ if ($method === "POST") {
         "INSERT INTO PersonalRecords (MemberID, Exercise, Muscle, Weight, Sets, Reps, DurationSeconds, Date)
          VALUES (?, ?, ?, ?, ?, ?, ?, CURDATE())"
     );
-    $stmt->bind_param("issiiii", $memberId, $exercise, $muscle, $weight, $sets, $reps, $duration);
+    $stmt->bind_param("issdiii", $memberId, $exercise, $muscle, $weight, $sets, $reps, $duration);
     $stmt->execute();
     $prId = $stmt->insert_id;
     $stmt->close();
@@ -114,5 +153,5 @@ if ($method === "DELETE") {
     exit();
 }
 
+http_response_code(405);
 echo json_encode(["success" => false, "message" => "Unsupported request method."]);
-?>

@@ -33,7 +33,7 @@ $stmt = $conn->prepare(
     "SELECT SessionCredits, SessionsUsed
      FROM Memberships
      WHERE MemberID = ? AND Status = 'Active'
-     ORDER BY StartDate DESC LIMIT 1"
+     ORDER BY StartDate DESC, MembershipID DESC LIMIT 1"
 );
 $stmt->bind_param("i", $memberId);
 $stmt->execute();
