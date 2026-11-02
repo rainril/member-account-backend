@@ -88,7 +88,7 @@ if ($checkStmt->num_rows > 0) {
 $checkStmt->close();
 
 // 3. Look up the selected plan (never trust a price from the client)
-$planStmt = $conn->prepare("SELECT DurationMonths, Price FROM Plans WHERE PlanID = ?");
+$planStmt = $conn->prepare("SELECT DurationMonths, Price, DurationLabel FROM Plans WHERE PlanID = ?");
 $planStmt->bind_param("i", $planId);
 $planStmt->execute();
 $plan = $planStmt->get_result()->fetch_assoc();
@@ -170,7 +170,14 @@ try {
     $paymentId = $payStmt->insert_id;
     $payStmt->close();
 
-    // Everything succeeded -- commit all three inserts together.
+    // Save the QR before committing, so a successful account always has one.
+    $qrToken = generateQrToken($memberId);
+    $qrStmt = $conn->prepare("UPDATE Members SET QRCodeData = ? WHERE MemberID = ?");
+    $qrStmt->bind_param("si", $qrToken, $memberId);
+    $qrStmt->execute();
+    $qrStmt->close();
+
+    // Everything succeeded -- commit all inserts together.
     $conn->commit();
 
     // ------------------------------------------------------------
@@ -185,12 +192,7 @@ try {
     ini_set('log_errors', 1);
     ini_set('error_log', __DIR__ . '/sync_debug.log');
 
-    $planLabelStmt = $conn->prepare("SELECT DurationLabel FROM Plans WHERE PlanID = ?");
-    $planLabelStmt->bind_param("i", $planId);
-    $planLabelStmt->execute();
-    $planLabelResult = $planLabelStmt->get_result()->fetch_assoc();
-    $planLabelStmt->close();
-    $planLabelForSync = $planLabelResult["DurationLabel"] ?? "";
+    $planLabelForSync = $plan["DurationLabel"] ?? "";
 
     $syncStartDate = date('Y-m-d');
     $syncNextRenewalDate = date('Y-m-d', strtotime("+$durationMonths months"));
@@ -215,8 +217,7 @@ try {
         "receiptUrl"      => $receiptRelativePath,
     ]);
 
-    error_log("Sync payload (from complete_registration): " . $syncPayload);
-
+    try {
     $ch = curl_init("http://127.0.0.1:8000/api/sync-membership");
     curl_setopt($ch, CURLOPT_POST, true);
     curl_setopt($ch, CURLOPT_POSTFIELDS, $syncPayload);
@@ -235,14 +236,9 @@ try {
         error_log("sync-membership HTTP $httpCode RESPONSE: " . $syncResponse);
     }
     curl_close($ch);
-
-    // 7. Generate a tamper-proof QR token now that the member truly
-    //    exists (post-commit), and save it to their Members row.
-    $qrToken = generateQrToken($memberId);
-    $qrStmt = $conn->prepare("UPDATE Members SET QRCodeData = ? WHERE MemberID = ?");
-    $qrStmt->bind_param("si", $qrToken, $memberId);
-    $qrStmt->execute();
-    $qrStmt->close();
+    } catch (Throwable $e) {
+        error_log('Registration admin sync failed: ' . $e->getMessage());
+    }
 
     $nextRenewalDate = date('Y-m-d', strtotime("+$durationMonths months"));
 
@@ -250,14 +246,12 @@ try {
     //    signup -- if the email fails to send (e.g. SMTP not
     //    configured yet), the account and payment are still valid.
     $memberIdLabel = 'PF-' . str_pad($memberId, 5, '0', STR_PAD_LEFT);
-    $planStmt2 = $conn->prepare("SELECT DurationLabel FROM Plans WHERE PlanID = ?");
-    $planStmt2->bind_param("i", $planId);
-    $planStmt2->execute();
-    $planLabelRow = $planStmt2->get_result()->fetch_assoc();
-    $planStmt2->close();
-    $planLabel = $planLabelRow["DurationLabel"] ?? "";
-
-    $emailResult = sendQrCodeEmail($email, $firstName . ' ' . $lastName, $memberIdLabel, $planLabel, $qrToken);
+    try {
+        $emailResult = sendQrCodeEmail($email, $firstName . ' ' . $lastName, $memberIdLabel, $planLabelForSync, $qrToken);
+    } catch (Throwable $e) {
+        error_log('Registration QR email failed: ' . $e->getMessage());
+        $emailResult = 'Could not send the QR email.';
+    }
 
     $response["success"]           = true;
     // UPDATED: message + status now reflect pending admin review

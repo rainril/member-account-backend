@@ -74,7 +74,8 @@ function sendQrCodeEmail($toEmail, $memberName, $memberIdLabel, $planName, $qrTo
     // (Runs on your PHP server, which has normal internet access --
     // this is separate from any sandboxed environment restrictions.)
     $qrImageUrl = "https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=" . urlencode($qrToken);
-    $qrImageData = @file_get_contents($qrImageUrl);
+    $context = stream_context_create(['http' => ['timeout' => 5]]);
+    $qrImageData = @file_get_contents($qrImageUrl, false, $context);
 
     if ($qrImageData === false) {
         return "Could not generate QR code image.";
@@ -93,6 +94,8 @@ function sendQrCodeEmail($toEmail, $memberName, $memberIdLabel, $planName, $qrTo
         $mail->Password   = $sender['password'];
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port       = 587;
+        $mail->Timeout    = 5;
+        $mail->Timelimit  = 10;
 
         // Recipients
         $mail->setFrom($sender['address'], $sender['name']);
