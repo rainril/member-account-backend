@@ -727,6 +727,23 @@ if ($action === "submit_receipt") {
     }
     $price = (float) $plan["Price"];
 
+    // Some deployed Payments schemas require MembershipID. Link the receipt
+    // to the current active membership; the admin changes the plan only after
+    // approving the receipt.
+    $membershipStmt = $conn->prepare(
+        "SELECT MembershipID FROM Memberships WHERE MemberID = ? AND Status = 'Active' ORDER BY MembershipID DESC LIMIT 1"
+    );
+    $membershipStmt->bind_param("i", $memberId);
+    $membershipStmt->execute();
+    $activeMembership = $membershipStmt->get_result()->fetch_assoc();
+    $membershipStmt->close();
+    if (!$activeMembership) {
+        $response["message"] = "An active membership is required to submit a plan upgrade. Please contact the gym to renew your membership.";
+        echo json_encode($response);
+        exit();
+    }
+    $membershipId = (int) $activeMembership["MembershipID"];
+
     // 2. Save the upload as receipt_<email-non-alnum-as-underscore>_<unixtime>.<ext>
     $uploadDir = __DIR__ . "/uploads/receipts/";
     if (!is_dir($uploadDir)) {
@@ -751,9 +768,9 @@ if ($action === "submit_receipt") {
     $ocrAmount = ocr_extract_amount($ocrText);      // float|null
     $ocrRef    = ocr_extract_reference($ocrText);   // string|null
 
-    // 4. Insert the Pending payment. MembershipID / SourceID / PaymentIntentID
-    //    stay NULL for the manual flow. Amount is the plan price, not the
-    //    OCR guess.
+    // 4. Insert the Pending payment. MembershipID links to the current active
+    //    membership for compatibility with deployed schemas that require it.
+    //    Amount is the selected plan price, not the OCR guess.
     try {
         $columns = [];
         $columnResult = $conn->query("SHOW COLUMNS FROM Payments");
@@ -768,9 +785,9 @@ if ($action === "submit_receipt") {
         // Payments table has not received those columns yet. Receipt review
         // and approval only require the core payment fields and ReceiptURL.
         $insertColumns = ['MemberID', 'MembershipID', 'Date', 'Amount', 'Method', 'Status'];
-        $insertValues = ['?', 'NULL', 'CURDATE()', '?', '?', "'Pending'"];
-        $bindTypes = 'ids';
-        $bindValues = [$memberId, $price, $method];
+        $insertValues = ['?', '?', 'CURDATE()', '?', '?', "'Pending'"];
+        $bindTypes = 'iids';
+        $bindValues = [$memberId, $membershipId, $price, $method];
         if ($hasPurpose) {
             $insertColumns[] = 'Purpose';
             $insertValues[] = '?';
