@@ -681,8 +681,21 @@ if ($action === "submit_receipt") {
     if (!in_array($purpose, ["New Registration", "Renewal", "Upgrade"], true)) {
         $purpose = "New Registration";
     }
-    if (!isset($_FILES["receipt"]) || $_FILES["receipt"]["error"] !== UPLOAD_ERR_OK) {
-        $response["message"] = "A receipt image file is required.";
+    if (!isset($_FILES["receipt"])) {
+        $response["message"] = "Choose a receipt image before submitting.";
+        echo json_encode($response);
+        exit();
+    }
+    $uploadError = (int) ($_FILES["receipt"]["error"] ?? UPLOAD_ERR_NO_FILE);
+    if ($uploadError !== UPLOAD_ERR_OK) {
+        $response["message"] = in_array($uploadError, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true)
+            ? "Receipt image is too large. Please upload an image under 10 MB."
+            : "The receipt image could not be uploaded. Please choose it again and retry.";
+        echo json_encode($response);
+        exit();
+    }
+    if ((int) ($_FILES["receipt"]["size"] ?? 0) > 10 * 1024 * 1024) {
+        $response["message"] = "Receipt image is too large. Please upload an image under 10 MB.";
         echo json_encode($response);
         exit();
     }

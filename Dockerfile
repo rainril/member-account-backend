@@ -21,6 +21,10 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 # This fixes that so config.php / db_connect.php can read $_ENV['DB_HOST'], etc.
 RUN echo "variables_order = EGPCS" > /usr/local/etc/php/conf.d/variables-order.ini
 
+# Receipt screenshots are multipart uploads; PHP's default 2 MB limit rejects
+# many phone images before the API can return a useful validation message.
+RUN printf 'upload_max_filesize=10M\npost_max_size=12M\nmemory_limit=256M\n' > /usr/local/etc/php/conf.d/uploads.ini
+
 WORKDIR /var/www/html
 
 # Copy composer files first (Docker layer caching: only re-installs if these change)
@@ -31,6 +35,7 @@ RUN composer install --no-dev --optimize-autoloader --no-interaction
 COPY . .
 # Create upload folders and give Apache (www-data) write permission
 RUN mkdir -p /var/www/html/uploads/body_photos \
+    /var/www/html/uploads/receipts \
     && chown -R www-data:www-data /var/www/html/uploads \
     && chmod -R 775 /var/www/html/uploads
 
