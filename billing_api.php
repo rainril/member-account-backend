@@ -755,15 +755,54 @@ if ($action === "submit_receipt") {
     //    stay NULL for the manual flow. Amount is the plan price, not the
     //    OCR guess.
     try {
-        $insert = $conn->prepare(
-            "INSERT INTO Payments
-                (MemberID, MembershipID, Date, Amount, Method, Status, Purpose, ReceiptURL, OcrExtractedAmount, OcrExtractedReference)
-             VALUES (?, NULL, CURDATE(), ?, ?, 'Pending', ?, ?, ?, ?)"
-        );
-        // Bind the OCR amount as a string so a null becomes SQL NULL
-        // (a "d" bind would coerce null to 0).
-        $ocrAmountParam = $ocrAmount !== null ? number_format($ocrAmount, 2, '.', '') : null;
-        $insert->bind_param("idsssss", $memberId, $price, $method, $purpose, $receiptRelativePath, $ocrAmountParam, $ocrRef);
+        $columns = [];
+        $columnResult = $conn->query("SHOW COLUMNS FROM Payments");
+        while ($column = $columnResult->fetch_assoc()) {
+            $columns[strtolower($column['Field'])] = true;
+        }
+        $hasPurpose = isset($columns['purpose']);
+        $hasOcrAmount = isset($columns['ocrextractedamount']);
+        $hasOcrReference = isset($columns['ocrextractedreference']);
+
+        // Keep optional metadata out of the insert when an older production
+        // Payments table has not received those columns yet. Receipt review
+        // and approval only require the core payment fields and ReceiptURL.
+        $insertColumns = ['MemberID', 'MembershipID', 'Date', 'Amount', 'Method', 'Status'];
+        $insertValues = ['?', 'NULL', 'CURDATE()', '?', '?', "'Pending'"];
+        $bindTypes = 'ids';
+        $bindValues = [$memberId, $price, $method];
+        if ($hasPurpose) {
+            $insertColumns[] = 'Purpose';
+            $insertValues[] = '?';
+            $bindTypes .= 's';
+            $bindValues[] = $purpose;
+        }
+        $insertColumns[] = 'ReceiptURL';
+        $insertValues[] = '?';
+        $bindTypes .= 's';
+        $bindValues[] = $receiptRelativePath;
+        if ($hasOcrAmount) {
+            $insertColumns[] = 'OcrExtractedAmount';
+            $insertValues[] = '?';
+            $bindTypes .= 's';
+            $bindValues[] = $ocrAmount !== null ? number_format($ocrAmount, 2, '.', '') : null;
+        }
+        if ($hasOcrReference) {
+            $insertColumns[] = 'OcrExtractedReference';
+            $insertValues[] = '?';
+            $bindTypes .= 's';
+            $bindValues[] = $ocrRef;
+        }
+
+        $sql = 'INSERT INTO Payments (' . implode(', ', $insertColumns) . ') VALUES ('
+            . implode(', ', $insertValues) . ')';
+        $insert = $conn->prepare($sql);
+        // bind_param requires references for dynamically collected values.
+        $bindArgs = [$bindTypes];
+        foreach ($bindValues as $index => $value) {
+            $bindArgs[] = &$bindValues[$index];
+        }
+        call_user_func_array([$insert, 'bind_param'], $bindArgs);
         $insert->execute();
         $paymentId = (int) $insert->insert_id;
         $insert->close();
